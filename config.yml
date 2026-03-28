@@ -1,0 +1,33 @@
+server:
+  domain: "local.openneutron.com"
+  smtp_port: 2525
+  api_port: 8080
+
+storage:
+  users_file: "data/users.bin"
+  blobs_dir: "data/blobs"
+
+tls:
+  # When true, a self-signed certificate is auto-generated on every start.
+  # When false, cert_path and key_path must point to valid PEM files.
+  self_signed: true
+  cert_path: "certs/cert.pem"
+  key_path: "certs/key.pem"
+
+dkim:
+  # Enable DKIM verification on incoming emails (true/false).
+  # Senders without DKIM are common and will not be rejected - status is only logged.
+  enabled: true
+  # Uncomment to configure signing of outgoing mail (future use):
+  #private_key_path: "dkim_private.pem"
+  # selector: "default"
+
+logging:
+  # One of: trace, debug, info, warn, error
+  level: "trace"
+
+jwt:
+  # Static secret for signing JWTs. Keep this long, random, and secret.
+  # If omitted (or commented out), a new random secret is generated on every
+  # startup - existing tokens will be invalidated on restart.
+  #secret: "change_me_to_a_long_random_string"
