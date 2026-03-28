@@ -1,4 +1,4 @@
-# OpenNeutron
+<img width="2500" height="500" alt="openneutronlogolargewhite" src="https://github.com/user-attachments/assets/8cbd6bc5-8d48-48e9-96c8-8875f66ae6b8" />
 
 Uncompromising Email.
 Your Keys. Your Server.
