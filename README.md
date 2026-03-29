@@ -1,4 +1,4 @@
-# OpenNeutron
+<img width="2500" height="500" alt="openneutronlogolargewhite" src="https://github.com/user-attachments/assets/8cbd6bc5-8d48-48e9-96c8-8875f66ae6b8" />
 
 Uncompromising Email.
 Your Keys. Your Server.
@@ -8,6 +8,9 @@ A self-hostable, true end-to-end encrypted email stack. We ditched IMAP and POP 
 > *Because your emails are nobody's business but yours.*
 
 OpenNeutron is an open-source email server built around a simple idea: **the server should never be able to read your mail**. Every email that touches OpenNeutron's storage is encrypted - either by the sending server using the recipient's public key, or end-to-end by the client - so even a fully compromised server leaks nothing but ciphertext.
+
+## This project is in aplha state and may contain bugs
+### Any help/feedback is appreciated
 
 It speaks standard SMTP on the wire, extends it with a custom 'OPNTRN' capability for peer-to-peer E2EE negotiation, and exposes a clean JSON REST API for client apps to register, authenticate, send, and receive mail.
 
