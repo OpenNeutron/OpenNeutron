@@ -1,0 +1,28 @@
+[package]
+name = "OpenNeutron"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+aes-gcm = "0.10"
+base64 = "0.22.1"
+bincode = "1.3"
+futures = "0.3.32"
+rand = "0.8"
+rsa = { version = "0.9", features = ["sha2"] }
+rcgen = "0.14.7"
+regex = "1.12.3"
+rustls = "0.23.37"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_derive = "1.0.228"
+serde_json = "1.0.149"
+sha2 = "0.10.9"
+jsonwebtoken = "9"
+sha256 = "1.6.0"
+tiny_http = "0.12.0"
+tokio-rustls = "0.26.4"
+log = "0.4.29"
+env_logger = "0.11.10"
+rustls-pemfile = "2.2.0"
+serde_yaml = "0.9"
+once_cell = "1.21.4"

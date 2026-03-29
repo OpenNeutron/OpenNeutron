@@ -2,11 +2,12 @@ use crate::core::{EmailStorage, UserStorage};
 use crate::core::User;
 use crate::utils::jwt::validate_jwt;
 use crate::api::dto::{ErrorResponse, json_header, cors_headers};
-use tiny_http::{Response, Method};
+use tiny_http::{Response, Method, Header};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tiny_http::Request;
 use std::io::Cursor;
+use std::path::Path;
 use serde_json;
 
 type Handler = fn(
@@ -111,8 +112,51 @@ impl Router {
             return;
         }
 
+        // Static file serving for non-API paths, like a simple SPA fallback (in our case we use react, so we serve index.html for all non-API paths)
+        let url_path = request.url().split('?').next().unwrap_or("/").to_string();
+        if !url_path.starts_with("/api/") {
+            let static_root = Path::new("data/static");
+            let relative = url_path.trim_start_matches('/');
+            let candidate = static_root.join(relative);
+            let file_path = if candidate.is_file() {
+                candidate
+            } else {
+                static_root.join("index.html")
+            };
+            match std::fs::read(&file_path) {
+                Ok(bytes) => {
+                    let mime = mime_type(file_path.as_path());
+                    let content_type = Header::from_bytes("Content-Type", mime).unwrap();
+                    let response = Response::from_data(bytes).with_status_code(200).with_header(content_type);
+                    let _ = request.respond(response);
+                    return;
+                }
+                Err(_) => {
+                    // Fall through to 404
+                }
+            }
+        }
+
         let body = serde_json::to_vec(&ErrorResponse { error: "Not Found".into(), code: "not_found".into() }).unwrap();
         let response = Response::from_data(body).with_status_code(404).with_header(json_header());
         let _ = request.respond(add_cors_headers(response));
+    }
+}
+
+fn mime_type(path: &Path) -> &'static str {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("html") => "text/html; charset=utf-8",
+        Some("css")  => "text/css; charset=utf-8",
+        Some("js")   => "application/javascript; charset=utf-8",
+        Some("json") => "application/json",
+        Some("png")  => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("svg")  => "image/svg+xml",
+        Some("ico")  => "image/x-icon",
+        Some("woff") => "font/woff",
+        Some("woff2") => "font/woff2",
+        Some("ttf")  => "font/ttf",
+        Some("webp") => "image/webp",
+        _            => "application/octet-stream",
     }
 }

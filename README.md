@@ -40,6 +40,7 @@ cargo build
 
 # or a release binary
 cargo build --release
+
 ```
 
 The binary lands at 'target/release/OpenNeutron'.
@@ -50,6 +51,17 @@ For a fully static musl build (great for containers):
 rustup target add x86_64-unknown-linux-musl
 cargo build --release --target x86_64-unknown-linux-musl
 ```
+
+You can now go to
+```
+http://yourserverurl.local:8080 (standart webinterface port)
+```
+and log in with
+```
+username: admin
+password: <any>
+```
+after entering any password you will be greeted with password creation window, where you enter your real password.
 
 ### Runtime dependencies
 
@@ -121,6 +133,8 @@ For the full gory detail - wire formats, byte offsets, KDF parameters, SMTP sess
 ---
 
 ## REST API (quick reference)
+
+all api endpoints start with /api/ perfix
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|

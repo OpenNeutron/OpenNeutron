@@ -1,6 +1,7 @@
 # OpenNeutron API Documentation
 
 This document outlines the API endpoints, request/response DTOs, and JSON formats for the OpenNeutron application.
+*ALL api andpoints have a /api/ prefix*
 
 ## Authentication
 
