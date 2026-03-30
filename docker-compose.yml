@@ -1,0 +1,22 @@
+version: '3.9'
+
+services:
+  openneutron:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: openneutron:local
+    container_name: openneutron
+    ports:
+      - "2525:2525"
+      - "8080:8080"
+    volumes:
+      # Mount code and artifacts so build output is persisted across runs.
+      - .:/usr/src/app:delegated
+      - ./data:/usr/src/app/data
+      - ./config.yml:/usr/src/app/config.yml
+    environment:
+      RUST_LOG: info
+    tty: true
+    stdin_open: true
+    restart: unless-stopped
