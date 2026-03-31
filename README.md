@@ -66,6 +66,10 @@ password: <any>
 ```
 after entering any password you will be greeted with password creation window, where you enter your real password.
 
+*it is highly recommended to install an ssl certificate*
+The browser crypto api is disabled for non-secure websites on modern browsers which triggers a
+fallback manual non-accelerated keygen and can take up a very long time- 
+
 ### Runtime dependencies
 
 None. All crypto (AES-GCM, RSA-OAEP, DKIM, TLS) is pure-Rust via 'aws-lc-rs' / 'ring' / 'rsa'. No OpenSSL needed.
