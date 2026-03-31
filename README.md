@@ -13,6 +13,10 @@ OpenNeutron is an open-source email server built around a simple idea: **the ser
 ### Any help/feedback is appreciated
 
 It speaks standard SMTP on the wire, extends it with a custom 'OPNTRN' capability for peer-to-peer E2EE negotiation, and exposes a clean JSON REST API for client apps to register, authenticate, send, and receive mail.
+---
+<img width="2560" height="1358" alt="image" src="https://github.com/user-attachments/assets/9edb2be0-c201-4534-ae04-baf2aadd84fd" />
+<img width="1880" height="983" alt="image" src="https://github.com/user-attachments/assets/7035ed03-cdfe-4670-b955-a03ae55cecf7" />
+
 
 ---
 
