@@ -3,6 +3,7 @@ use tiny_http::{Request, Response};
 use std::sync::Arc;
 use std::io::Cursor;
 use crate::core::{UserStorage, EmailStorage, User, Group};
+use crate::api::request::read_json_body;
 use crate::api::dto::{
     GroupDto, GroupsListResponse, CreateGroupRequest, GetGroupRequest,
     UpdateGroupRequest, DeleteGroupRequest, GroupEmailRequest,
@@ -42,18 +43,9 @@ pub fn create_group(
         }
     };
 
-    let mut body = String::new();
-    if request.as_reader().read_to_string(&mut body).is_err() {
-        let err = serde_json::to_vec(&ErrorResponse { error: "Failed to read body".into(), code: "body_read_error".into() }).unwrap();
-        return Response::from_data(err).with_status_code(400).with_header(json_header());
-    }
-
-    let req: CreateGroupRequest = match serde_json::from_str(&body) {
+    let req: CreateGroupRequest = match read_json_body(request) {
         Ok(r) => r,
-        Err(_) => {
-            let err = serde_json::to_vec(&ErrorResponse { error: "Invalid JSON".into(), code: "invalid_json".into() }).unwrap();
-            return Response::from_data(err).with_status_code(422).with_header(json_header());
-        }
+        Err(resp) => return resp,
     };
 
     let group = Group::new(req.title, req.filter_addresses.unwrap_or_default());
@@ -82,18 +74,9 @@ pub fn get_group(
         }
     };
 
-    let mut body = String::new();
-    if request.as_reader().read_to_string(&mut body).is_err() {
-        let err = serde_json::to_vec(&ErrorResponse { error: "Failed to read body".into(), code: "body_read_error".into() }).unwrap();
-        return Response::from_data(err).with_status_code(400).with_header(json_header());
-    }
-
-    let req: GetGroupRequest = match serde_json::from_str(&body) {
+    let req: GetGroupRequest = match read_json_body(request) {
         Ok(r) => r,
-        Err(_) => {
-            let err = serde_json::to_vec(&ErrorResponse { error: "Invalid JSON".into(), code: "invalid_json".into() }).unwrap();
-            return Response::from_data(err).with_status_code(422).with_header(json_header());
-        }
+        Err(resp) => return resp,
     };
 
     match user.groups.iter().find(|g| g.uid == req.uid) {
@@ -122,18 +105,9 @@ pub fn update_group(
         }
     };
 
-    let mut body = String::new();
-    if request.as_reader().read_to_string(&mut body).is_err() {
-        let err = serde_json::to_vec(&ErrorResponse { error: "Failed to read body".into(), code: "body_read_error".into() }).unwrap();
-        return Response::from_data(err).with_status_code(400).with_header(json_header());
-    }
-
-    let req: UpdateGroupRequest = match serde_json::from_str(&body) {
+    let req: UpdateGroupRequest = match read_json_body(request) {
         Ok(r) => r,
-        Err(_) => {
-            let err = serde_json::to_vec(&ErrorResponse { error: "Invalid JSON".into(), code: "invalid_json".into() }).unwrap();
-            return Response::from_data(err).with_status_code(422).with_header(json_header());
-        }
+        Err(resp) => return resp,
     };
 
     let existing = match user.groups.iter().find(|g| g.uid == req.uid) {
@@ -177,18 +151,9 @@ pub fn delete_group(
         }
     };
 
-    let mut body = String::new();
-    if request.as_reader().read_to_string(&mut body).is_err() {
-        let err = serde_json::to_vec(&ErrorResponse { error: "Failed to read body".into(), code: "body_read_error".into() }).unwrap();
-        return Response::from_data(err).with_status_code(400).with_header(json_header());
-    }
-
-    let req: DeleteGroupRequest = match serde_json::from_str(&body) {
+    let req: DeleteGroupRequest = match read_json_body(request) {
         Ok(r) => r,
-        Err(_) => {
-            let err = serde_json::to_vec(&ErrorResponse { error: "Invalid JSON".into(), code: "invalid_json".into() }).unwrap();
-            return Response::from_data(err).with_status_code(422).with_header(json_header());
-        }
+        Err(resp) => return resp,
     };
 
     if !user_storage.delete_group(&user.username, req.uid) {
@@ -218,18 +183,9 @@ pub fn add_email_to_group(
         }
     };
 
-    let mut body = String::new();
-    if request.as_reader().read_to_string(&mut body).is_err() {
-        let err = serde_json::to_vec(&ErrorResponse { error: "Failed to read body".into(), code: "body_read_error".into() }).unwrap();
-        return Response::from_data(err).with_status_code(400).with_header(json_header());
-    }
-
-    let req: GroupEmailRequest = match serde_json::from_str(&body) {
+    let req: GroupEmailRequest = match read_json_body(request) {
         Ok(r) => r,
-        Err(_) => {
-            let err = serde_json::to_vec(&ErrorResponse { error: "Invalid JSON".into(), code: "invalid_json".into() }).unwrap();
-            return Response::from_data(err).with_status_code(422).with_header(json_header());
-        }
+        Err(resp) => return resp,
     };
 
     if !user.emailIds.contains(&req.email_uid) {
@@ -264,18 +220,9 @@ pub fn remove_email_from_group(
         }
     };
 
-    let mut body = String::new();
-    if request.as_reader().read_to_string(&mut body).is_err() {
-        let err = serde_json::to_vec(&ErrorResponse { error: "Failed to read body".into(), code: "body_read_error".into() }).unwrap();
-        return Response::from_data(err).with_status_code(400).with_header(json_header());
-    }
-
-    let req: GroupEmailRequest = match serde_json::from_str(&body) {
+    let req: GroupEmailRequest = match read_json_body(request) {
         Ok(r) => r,
-        Err(_) => {
-            let err = serde_json::to_vec(&ErrorResponse { error: "Invalid JSON".into(), code: "invalid_json".into() }).unwrap();
-            return Response::from_data(err).with_status_code(422).with_header(json_header());
-        }
+        Err(resp) => return resp,
     };
 
     if !user_storage.remove_email_from_group(&user.username, req.group_uid, req.email_uid) {

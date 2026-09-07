@@ -5,7 +5,22 @@ This document outlines the API endpoints, request/response DTOs, and JSON format
 
 ## Authentication
 
-All secure endpoints require a JWT token in the 'Authorization' header: 'Bearer <token>'.
+Every endpoint falls into one of three access levels, enforced centrally by the router:
+
+| Level | Requirement |
+|---|---|
+| **Open** | No credentials. Only 'POST /auth/login' and 'POST /user/register'. |
+| **Authenticated** | A valid, unexpired JWT in the 'Authorization: Bearer <token>' header, belonging to an existing account. |
+| **Admin** | An authenticated session whose account currently has 'is_admin: true'. Every '/admin/*' route. |
+
+A valid session by itself grants **no** administrative access: an authenticated
+non-admin calling any '/admin/*' route receives '403 forbidden'. Privilege is read
+from the stored account on every request, so revoking 'is_admin' takes effect
+immediately rather than at the next login.
+
+Tokens expire one hour after issue. A token is also rejected if it was issued
+before an administrator last reset that account's credentials, so an admin
+password reset immediately terminates the account's existing sessions.
 
 ## DTOs Overview
 
@@ -18,9 +33,19 @@ All secure endpoints require a JWT token in the 'Authorization' header: 'Bearer 
 #### ErrorResponse
 ```json
 {
-  "error": "string"
+  "error": "string",
+  "code": "string"
 }
 ```
+
+Codes shared by many endpoints:
+
+| Status | Code | Meaning |
+|---|---|---|
+| 401 | 'unauthorized' | Missing, invalid, expired, or administratively revoked token. |
+| 403 | 'forbidden' | Authenticated, but the route requires administrator privileges. |
+| 413 | 'body_too_large' | Request body exceeds 'server.max_request_body_bytes' (25 MiB by default). |
+| 422 | 'invalid_json' | Body is not valid JSON for this endpoint. |
 
 #### MessageResponse
 ```json
@@ -46,6 +71,7 @@ All secure endpoints require a JWT token in the 'Authorization' header: 'Bearer 
 {
   "token": "string",
   "force_reset": false,
+  "is_admin": false,
   "username": "string",
   "public_key": "base64-string|null",
   "unread_emails": 0,
@@ -54,13 +80,23 @@ All secure endpoints require a JWT token in the 'Authorization' header: 'Bearer 
 }
 ```
 
-> **'force_reset'**: When 'true', the user has no password set and must set one before normal use. This is always 'true' for accounts provisioned by an admin. The client should redirect to a password-setup flow and call the appropriate endpoint to set the password.
+> **'force_reset'**: When 'true', the account has no password yet and the presented credential was its one-time **setup token**. The session is intended solely for completing 'POST /user/setup'. This is always 'true' for a freshly provisioned account.
+>
+> **Failures**: every rejected login returns '401' with code 'invalid_credentials' and the same message, whether the account exists or not - the endpoint deliberately does not reveal which mailboxes exist. After 10 failed attempts against one account, or 100 from one source address, within 15 minutes, further attempts return '429 too_many_attempts' until the window elapses.
 >
 > **'salt'**: A per-user random hex string (32 hex chars / 16 bytes of entropy) generated at account creation time. The client uses this together with the user's password to derive the AES key that encrypts the private key. Always returned on successful login regardless of 'force_reset'.
 >
 > **'encrypted_private_key'**: The user's RSA private key, AES-256 encrypted client-side. 'null' for admin-created accounts that have not yet completed setup.
 
 #### POST /user/register
+Self-service account creation. **Disabled by default**: unless
+'server.allow_open_registration' is 'true' in 'config.yml', this endpoint returns
+'403' with code 'registration_disabled' and accounts must be created by an
+administrator instead. Usernames are restricted to lowercase letters, digits,
+'.', '_' and '-', must start and end with a letter or digit, and are at most 64
+characters. 'public_key' must be a base64 SPKI RSA key that actually parses;
+anything else is rejected with '400 invalid_public_key'.
+
 **Request**: 'CreateUserRequest'
 ```json
 {
@@ -117,10 +153,15 @@ Used during the initial account setup flow. When a user receives 'force_reset: t
 ```
 
 > **Flow**:
-> 1. Admin creates user via 'POST /admin/users' -> 'force_reset: true'
-> 2. User logs in with any password -> receives token + 'force_reset: true'
-> 3. Client calls 'POST /user/setup' with the Bearer token, chosen password hash, and public key
-> 4. Server stores the credentials; subsequent logins return 'force_reset: false'
+> 1. Admin creates the user via 'POST /admin/users'. The response carries a one-time 'setup_token', which the admin passes to the new user out of band. It is shown only in that response.
+> 2. The user logs in with their username and **the setup token as the password** -> receives a token + 'force_reset: true'. No other password is accepted.
+> 3. Client calls 'POST /user/setup' with the Bearer token, chosen password hash, and public key.
+> 4. The server stores the credentials and invalidates the setup token; subsequent logins use the real password and return 'force_reset: false'.
+
+### Admin Routes (JWT + 'is_admin' Required)
+
+Every route below requires an administrator session. A valid non-admin token
+receives '403' with code 'forbidden'.
 
 #### GET /admin/users
 **Request**: None
@@ -142,25 +183,33 @@ Used during the initial account setup flow. When a user receives 'force_reset: t
 ```
 
 #### POST /admin/users
-Creates a new user account with no password. The user must set their own password on first login (indicated by 'force_reset: true' in the login response and in this response).
+Creates a new user account with no password but with a one-time setup token. The user presents that token as their password on their first (and only that) login, then defines a real password via 'POST /user/setup'.
 
 **Request**: 'AdminCreateUserRequest'
 ```json
 {
-  "username": "string"
+  "username": "string",
+  "is_admin": false
 }
 ```
+> **'is_admin'** is optional and defaults to 'false'. Pass 'true' only to create another administrator.
+
 **Response**: 'AdminCreateUserResponse'
 ```json
 {
   "message": "User created",
-  "force_reset": true
+  "force_reset": true,
+  "setup_token": "64-hex-chars"
 }
 ```
 
+> **'setup_token'** is a password-equivalent secret returned **only here** - it cannot be read back later. Deliver it to the new user over a channel you trust. If it is lost, reset the account with 'POST /admin/users/credentials'.
+>
 > **'force_reset'** is always 'true' here - it confirms that the created account has no password and the user will be required to define one on first login.
 
 #### DELETE /admin/users
+Deleting your own account ('409 cannot_delete_self') or the last remaining administrator ('409 last_admin') is refused, so the server cannot be locked out of administration.
+
 **Request**: 'AdminDeleteUserRequest'
 ```json
 {
@@ -187,13 +236,17 @@ Overwrite a user's password, public key, or both. Omit either field to leave it 
 }
 ```
 > All three credential fields are optional, but at least one must be present. 'password' is the client-side password token stored as-is. 'encrypted_private_key' is the RSA private key encrypted client-side with AES-256.
+>
+> Passing an **empty** 'password' clears the password and returns the account to the setup state with a fresh 'setup_token' - use this to re-provision a user who lost theirs. Passing any password change also revokes every session token already issued for that account.
 
-**Response**: 'MessageResponse'
+**Response**: 'AdminResetResponse'
 ```json
 {
-  "message": "Credentials updated"
+  "message": "Credentials updated",
+  "setup_token": "64-hex-chars"
 }
 ```
+> **'setup_token'** appears only when an empty password put the account back into the setup state; it is omitted otherwise.
 
 #### POST /admin/users/admin
 Grant or revoke admin privileges for a user.
@@ -205,7 +258,7 @@ Grant or revoke admin privileges for a user.
   "is_admin": true
 }
 ```
-> Set 'is_admin' to 'false' to demote an admin back to a regular user.
+> Set 'is_admin' to 'false' to demote an admin back to a regular user. Demoting the last remaining administrator is refused with '409 last_admin'.
 
 **Response**: 'MessageResponse'
 ```json
@@ -319,19 +372,23 @@ Returns the most recent email UIDs for the authenticated user, newest first, wit
 ```
 
 #### POST /email/send
-Sends a raw email via an external SMTP server. The server performs STARTTLS opportunistically if advertised. No encryption is applied server-side; the bytes are forwarded as-is.
+Sends a raw email to each recipient's mail server. The server performs STARTTLS opportunistically if advertised. No encryption is applied server-side; the bytes are forwarded as-is.
 
 **Request**: 'SendEmailRequest'
 ```json
 {
-  "from": "alice@example.com",
   "to": ["bob@remote.com"],
-  "data": "base64-encoded-raw-email-bytes",
-  "smtp_host": "mail.remote.com",
-  "smtp_port": 587
+  "data": "base64-encoded-raw-email-bytes"
 }
 ```
-> 'smtp_port' is optional; defaults to '25'.
+> **'from', 'smtp_host' and 'smtp_port' are accepted but ignored.** The envelope
+> sender is always '<your-username>@<server-domain>', so no account can send mail
+> as another user or as a third-party domain, and delivery targets are resolved
+> from each recipient's own MX record rather than from the request - a
+> caller-supplied host would let any user aim the server's SMTP client at
+> arbitrary internal addresses.
+>
+> At most 100 recipients per request ('400 invalid_recipients' beyond that).
 
 **Response**: 'MessageResponse'
 ```json
@@ -339,6 +396,8 @@ Sends a raw email via an external SMTP server. The server performs STARTTLS oppo
   "message": "Email sent"
 }
 ```
+> Returns '502 smtp_error' if no recipient could be delivered to; a partial
+> success reports how many recipients were reached.
 
 #### POST /email/read
 Mark a single email as read.
@@ -632,6 +691,8 @@ Resolve public keys for a list of email addresses. Local users are looked up dir
 
 #### POST /email/sendencrypted
 Send an email to one or more recipients. The server stores a local copy for the sender and delivers each recipient's payload individually.
+At most 100 recipients per request. The stored local copy is timestamped by the server, not by 'localcopy.timestamp'.
+
 
 **Request**: 'SendEncryptedRequest'
 ```json

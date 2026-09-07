@@ -31,6 +31,24 @@ pub struct ServerSettings {
     pub domain: String,
     pub smtp_port: u16,
     pub api_port: u16,
+    /// When false (the default) '/api/user/register' is disabled and accounts can
+    /// only be provisioned by an administrator. Leaving self-registration open on a
+    /// mail server lets anyone obtain a mailbox on your domain.
+    #[serde(default)]
+    pub allow_open_registration: bool,
+    /// Origins permitted to call the API from a browser. Empty (the default) sends
+    /// no CORS headers at all, which is correct when the bundled SPA is served from
+    /// this same server. Use explicit origins - never "*" - if a separate frontend
+    /// origin needs access.
+    #[serde(default)]
+    pub cors_allowed_origins: Vec<String>,
+    /// Hard cap on an API request body, in bytes. Bodies are buffered in memory.
+    #[serde(default = "default_max_body_bytes")]
+    pub max_request_body_bytes: usize,
+}
+
+fn default_max_body_bytes() -> usize {
+    26_214_400 // 25 MiB
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -85,6 +103,9 @@ impl Default for Config {
                 domain: "localhost".to_string(),
                 smtp_port: 2525,
                 api_port: 8080,
+                allow_open_registration: false,
+                cors_allowed_origins: Vec::new(),
+                max_request_body_bytes: default_max_body_bytes(),
             },
             storage: StorageSettings {
                 users_file: "data/users.bin".to_string(),

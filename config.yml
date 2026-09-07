@@ -2,6 +2,16 @@ server:
   domain: "local.openneutron.com"
   smtp_port: 2525
   api_port: 8080
+  # Allow anyone to create their own account via POST /api/user/register.
+  # Leave this false on a public deployment: an open endpoint hands out mailboxes
+  # on your domain to anyone who asks. Accounts are otherwise created by an
+  # administrator, who receives a one-time setup token for the new user.
+  allow_open_registration: false
+  # Browser origins allowed to call the API cross-origin. The bundled web UI is
+  # served from this same server, so it needs no entry here. Never use "*".
+  cors_allowed_origins: []
+  # Maximum API request body size in bytes (bodies are buffered in memory).
+  max_request_body_bytes: 26214400
 
 storage:
   users_file: "data/users.bin"

@@ -3,6 +3,8 @@ use jsonwebtoken::errors::Error as JwtError;
 use serde::{Serialize, Deserialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::OnceLock;
+use rand::rngs::OsRng;
+use rand::RngCore;
 
 const JWT_EXPIRY_SECONDS: usize = 3600;
 
@@ -16,27 +18,31 @@ fn jwt_secret() -> &'static [u8] {
         if let Some(jwt_cfg) = &crate::config::get().jwt {
             if let Some(secret) = &jwt_cfg.secret {
                 if !secret.is_empty() {
+                    if secret.len() < MIN_SECRET_LEN {
+                        log::warn!(
+                            "[JWT] jwt.secret is only {} bytes - use at least {} random bytes, \
+                             otherwise the signing key is brute-forceable and anyone can mint \
+                             tokens for any account.",
+                            secret.len(),
+                            MIN_SECRET_LEN
+                        );
+                    }
                     return secret.as_bytes().to_vec();
                 }
             }
         }
-        // Fall back to a random secret for this process run
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        // Use a mix of time+pid for a simple random seed (no crypto dep needed)
-        let mut h = DefaultHasher::new();
-        SystemTime::now().hash(&mut h);
-        std::process::id().hash(&mut h);
-        // Stretch to 32 bytes
-        let seed = h.finish();
-        let mut bytes = Vec::with_capacity(32);
-        for i in 0u64..4 {
-            bytes.extend_from_slice(&(seed ^ i.wrapping_mul(0x9e3779b97f4a7c15)).to_le_bytes());
-        }
+        // Fall back to a cryptographically random per-process secret. This must come
+        // from the OS CSPRNG: a secret derived from the clock and the pid is guessable
+        // by anyone who can observe either, which would let an attacker forge tokens.
+        let mut bytes = vec![0u8; 32];
+        OsRng.fill_bytes(&mut bytes);
         log::warn!("[JWT] No jwt.secret in config - using a random key. Tokens will be invalidated on restart.");
         bytes
     })
 }
+
+/// HS256 keys shorter than this offer less security than the digest itself.
+const MIN_SECRET_LEN: usize = 32;
 
 /// Call once at startup (after 'config::init') to eagerly resolve and log the
 /// JWT secret so the random-key warning appears during boot, not on first login.
@@ -65,10 +71,12 @@ pub fn generate_jwt(username: &str) -> Result<String, JwtError> {
 }
 
 pub fn validate_jwt(token: &str) -> Result<Claims, JwtError> {
-    decode::<Claims>(
-        token,
-        &DecodingKey::from_secret(jwt_secret()),
-        &Validation::new(Algorithm::HS256),
-    )
-    .map(|data| data.claims)
+    let mut validation = Validation::new(Algorithm::HS256);
+    // Pin the accepted algorithm set to HS256 only and require an expiry, so a
+    // token cannot be replayed forever or presented with a swapped 'alg' header.
+    validation.algorithms = vec![Algorithm::HS256];
+    validation.required_spec_claims = ["exp".to_string()].into_iter().collect();
+    validation.leeway = 0;
+    decode::<Claims>(token, &DecodingKey::from_secret(jwt_secret()), &validation)
+        .map(|data| data.claims)
 }

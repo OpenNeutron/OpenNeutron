@@ -15,6 +15,11 @@ use crate::api::dto::{
 use crate::smtp::EmailSendingFSM;
 use crate::utils::emailutils;
 use crate::core::Email;
+use crate::api::request::read_json_body;
+
+/// Upper bound on recipients per send request. Without it, one API call can fan
+/// out into an unbounded number of outbound SMTP connections.
+const MAX_RECIPIENTS: usize = 100;
 
 pub fn get_email(
     request: &mut Request,
@@ -30,18 +35,9 @@ pub fn get_email(
         }
     };
 
-    let mut body = String::new();
-    if request.as_reader().read_to_string(&mut body).is_err() {
-        let err = serde_json::to_vec(&ErrorResponse { error: "Failed to read body".into(), code: "body_read_error".into() }).unwrap();
-        return Response::from_data(err).with_status_code(400).with_header(json_header());
-    }
-
-    let req: GetEmailRequest = match serde_json::from_str(&body) {
+    let req: GetEmailRequest = match read_json_body(request) {
         Ok(r) => r,
-        Err(_) => {
-            let err = serde_json::to_vec(&ErrorResponse { error: "Invalid JSON".into(), code: "invalid_json".into() }).unwrap();
-            return Response::from_data(err).with_status_code(422).with_header(json_header());
-        }
+        Err(resp) => return resp,
     };
 
     if !user.emailIds.contains(&req.uid) {
@@ -82,18 +78,9 @@ pub fn get_emails_bulk(
         }
     };
 
-    let mut body = String::new();
-    if request.as_reader().read_to_string(&mut body).is_err() {
-        let err = serde_json::to_vec(&ErrorResponse { error: "Failed to read body".into(), code: "body_read_error".into() }).unwrap();
-        return Response::from_data(err).with_status_code(400).with_header(json_header());
-    }
-
-    let req: GetEmailsBulkRequest = match serde_json::from_str(&body) {
+    let req: GetEmailsBulkRequest = match read_json_body(request) {
         Ok(r) => r,
-        Err(_) => {
-            let err = serde_json::to_vec(&ErrorResponse { error: "Invalid JSON".into(), code: "invalid_json".into() }).unwrap();
-            return Response::from_data(err).with_status_code(422).with_header(json_header());
-        }
+        Err(resp) => return resp,
     };
 
     
@@ -150,18 +137,9 @@ pub fn delete_email(
         }
     };
 
-    let mut body = String::new();
-    if request.as_reader().read_to_string(&mut body).is_err() {
-        let err = serde_json::to_vec(&ErrorResponse { error: "Failed to read body".into(), code: "body_read_error".into() }).unwrap();
-        return Response::from_data(err).with_status_code(400).with_header(json_header());
-    }
-
-    let req: DeleteEmailRequest = match serde_json::from_str(&body) {
+    let req: DeleteEmailRequest = match read_json_body(request) {
         Ok(r) => r,
-        Err(_) => {
-            let err = serde_json::to_vec(&ErrorResponse { error: "Invalid JSON".into(), code: "invalid_json".into() }).unwrap();
-            return Response::from_data(err).with_status_code(422).with_header(json_header());
-        }
+        Err(resp) => return resp,
     };
 
     if !user.emailIds.contains(&req.uid) {
@@ -204,18 +182,9 @@ pub fn set_email_bytes(
         }
     };
 
-    let mut body = String::new();
-    if request.as_reader().read_to_string(&mut body).is_err() {
-        let err = serde_json::to_vec(&ErrorResponse { error: "Failed to read body".into(), code: "body_read_error".into() }).unwrap();
-        return Response::from_data(err).with_status_code(400).with_header(json_header());
-    }
-
-    let req: SetEmailBytesRequest = match serde_json::from_str(&body) {
+    let req: SetEmailBytesRequest = match read_json_body(request) {
         Ok(r) => r,
-        Err(_) => {
-            let err = serde_json::to_vec(&ErrorResponse { error: "Invalid JSON".into(), code: "invalid_json".into() }).unwrap();
-            return Response::from_data(err).with_status_code(422).with_header(json_header());
-        }
+        Err(resp) => return resp,
     };
 
     if !user.emailIds.contains(&req.uid) {
@@ -277,18 +246,9 @@ pub fn list_recent_email_uids(
         }
     };
 
-    let mut body = String::new();
-    if request.as_reader().read_to_string(&mut body).is_err() {
-        let err = serde_json::to_vec(&ErrorResponse { error: "Failed to read body".into(), code: "body_read_error".into() }).unwrap();
-        return Response::from_data(err).with_status_code(400).with_header(json_header());
-    }
-
-    let req: GetRecentEmailsRequest = match serde_json::from_str(&body) {
+    let req: GetRecentEmailsRequest = match read_json_body(request) {
         Ok(r) => r,
-        Err(_) => {
-            let err = serde_json::to_vec(&ErrorResponse { error: "Invalid JSON".into(), code: "invalid_json".into() }).unwrap();
-            return Response::from_data(err).with_status_code(422).with_header(json_header());
-        }
+        Err(resp) => return resp,
     };
 
     
@@ -309,7 +269,7 @@ pub fn send_email(
     _user_storage: Arc<UserStorage>,
     _email_storage: Arc<EmailStorage>,
 ) -> Response<Cursor<Vec<u8>>> {
-    let _user = match user {
+    let user = match user {
         Some(u) => u,
         None => {
             let err = serde_json::to_vec(&ErrorResponse { error: "Unauthorized".into(), code: "unauthorized".into() }).unwrap();
@@ -317,18 +277,9 @@ pub fn send_email(
         }
     };
 
-    let mut body = String::new();
-    if request.as_reader().read_to_string(&mut body).is_err() {
-        let err = serde_json::to_vec(&ErrorResponse { error: "Failed to read body".into(), code: "body_read_error".into() }).unwrap();
-        return Response::from_data(err).with_status_code(400).with_header(json_header());
-    }
-
-    let req: SendEmailRequest = match serde_json::from_str(&body) {
+    let req: SendEmailRequest = match read_json_body(request) {
         Ok(r) => r,
-        Err(_) => {
-            let err = serde_json::to_vec(&ErrorResponse { error: "Invalid JSON".into(), code: "invalid_json".into() }).unwrap();
-            return Response::from_data(err).with_status_code(422).with_header(json_header());
-        }
+        Err(resp) => return resp,
     };
 
     let data = match STANDARD.decode(&req.data) {
@@ -339,32 +290,97 @@ pub fn send_email(
         }
     };
 
-    let port = req.smtp_port.unwrap_or(25);
-    let domain = emailutils::get_server_domain();
-    let mut fsm = match EmailSendingFSM::connect(&req.smtp_host, port, domain) {
-        Ok(f) => f,
-        Err(e) => {
-            let err = serde_json::to_vec(&ErrorResponse {
-                error: format!("Failed to connect to SMTP server: {}", e),
-                code: "smtp_connect_error".into(),
-            }).unwrap();
-            return Response::from_data(err).with_status_code(502).with_header(json_header());
-        }
-    };
+    if req.to.is_empty() || req.to.len() > MAX_RECIPIENTS {
+        let err = serde_json::to_vec(&ErrorResponse {
+            error: format!("Provide between 1 and {} recipients", MAX_RECIPIENTS),
+            code: "invalid_recipients".into(),
+        }).unwrap();
+        return Response::from_data(err).with_status_code(400).with_header(json_header());
+    }
 
-    match fsm.send(&req.from, &req.to, &data) {
-        Ok(()) => {
-            let msg = serde_json::to_vec(&MessageResponse { message: "Email sent".into() }).unwrap();
-            Response::from_data(msg).with_status_code(200).with_header(json_header())
-        }
-        Err(e) => {
-            let err = serde_json::to_vec(&ErrorResponse {
-                error: format!("SMTP error: {}", e),
-                code: "smtp_error".into(),
-            }).unwrap();
-            Response::from_data(err).with_status_code(502).with_header(json_header())
+    // The envelope sender is the authenticated account, never a client-supplied
+    // value: honouring 'req.from' would let any user send mail as anyone,
+    // including as another local user or as a third-party domain.
+    let domain = emailutils::get_server_domain();
+    let sender_address = format!("{}@{}", user.username, domain);
+    if !req.from.trim().is_empty() && !req.from.eq_ignore_ascii_case(&sender_address) {
+        log::warn!(
+            "[API] User '{}' tried to send with envelope sender '{}' - overriding with '{}'",
+            user.username, req.from, sender_address
+        );
+    }
+
+    // Delivery targets are resolved from each recipient's own domain. Taking a
+    // host and port from the request body would turn this endpoint into an
+    // arbitrary-destination TCP client against the server's internal network.
+    if !req.smtp_host.trim().is_empty() {
+        log::warn!(
+            "[API] Ignoring client-supplied smtp_host '{}' from user '{}'",
+            req.smtp_host, user.username
+        );
+    }
+
+    let mut delivered = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+
+    let mut by_domain: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    for address in &req.to {
+        match address.find('@') {
+            Some(pos) => by_domain
+                .entry(address[pos + 1..].to_lowercase())
+                .or_default()
+                .push(address.clone()),
+            None => failures.push(format!("{}: invalid email address", address)),
         }
     }
+
+    for (rcpt_domain, addresses) in &by_domain {
+        let mx_host = match emailutils::resolve_mx(rcpt_domain) {
+            Some(host) => host,
+            None => {
+                for address in addresses {
+                    failures.push(format!("{}: MX lookup failed for '{}'", address, rcpt_domain));
+                }
+                continue;
+            }
+        };
+
+        let mut fsm = match EmailSendingFSM::connect(&mx_host, 25, domain) {
+            Ok(f) => f,
+            Err(e) => {
+                for address in addresses {
+                    failures.push(format!("{}: SMTP connect to '{}' failed: {}", address, mx_host, e));
+                }
+                continue;
+            }
+        };
+
+        match fsm.send(&sender_address, addresses, &data) {
+            Ok(()) => delivered += addresses.len(),
+            Err(e) => {
+                for address in addresses {
+                    failures.push(format!("{}: SMTP error: {}", address, e));
+                }
+            }
+        }
+    }
+
+    if delivered == 0 {
+        let err = serde_json::to_vec(&ErrorResponse {
+            error: format!("Delivery failed: {}", failures.join("; ")),
+            code: "smtp_error".into(),
+        }).unwrap();
+        return Response::from_data(err).with_status_code(502).with_header(json_header());
+    }
+
+    let msg = serde_json::to_vec(&MessageResponse {
+        message: if failures.is_empty() {
+            "Email sent".to_string()
+        } else {
+            format!("Email sent to {} of {} recipients", delivered, req.to.len())
+        },
+    }).unwrap();
+    Response::from_data(msg).with_status_code(200).with_header(json_header())
 }
 
 pub fn mark_email_read(
@@ -381,18 +397,9 @@ pub fn mark_email_read(
         }
     };
 
-    let mut body = String::new();
-    if request.as_reader().read_to_string(&mut body).is_err() {
-        let err = serde_json::to_vec(&ErrorResponse { error: "Failed to read body".into(), code: "body_read_error".into() }).unwrap();
-        return Response::from_data(err).with_status_code(400).with_header(json_header());
-    }
-
-    let req: MarkEmailReadRequest = match serde_json::from_str(&body) {
+    let req: MarkEmailReadRequest = match read_json_body(request) {
         Ok(r) => r,
-        Err(_) => {
-            let err = serde_json::to_vec(&ErrorResponse { error: "Invalid JSON".into(), code: "invalid_json".into() }).unwrap();
-            return Response::from_data(err).with_status_code(422).with_header(json_header());
-        }
+        Err(resp) => return resp,
     };
 
     if !user.emailIds.contains(&req.uid) {
@@ -431,18 +438,9 @@ pub fn mark_email_unread(
         }
     };
 
-    let mut body = String::new();
-    if request.as_reader().read_to_string(&mut body).is_err() {
-        let err = serde_json::to_vec(&ErrorResponse { error: "Failed to read body".into(), code: "body_read_error".into() }).unwrap();
-        return Response::from_data(err).with_status_code(400).with_header(json_header());
-    }
-
-    let req: MarkEmailReadRequest = match serde_json::from_str(&body) {
+    let req: MarkEmailReadRequest = match read_json_body(request) {
         Ok(r) => r,
-        Err(_) => {
-            let err = serde_json::to_vec(&ErrorResponse { error: "Invalid JSON".into(), code: "invalid_json".into() }).unwrap();
-            return Response::from_data(err).with_status_code(422).with_header(json_header());
-        }
+        Err(resp) => return resp,
     };
 
     if !user.emailIds.contains(&req.uid) {
@@ -481,18 +479,9 @@ pub fn set_email_starred(
         }
     };
 
-    let mut body = String::new();
-    if request.as_reader().read_to_string(&mut body).is_err() {
-        let err = serde_json::to_vec(&ErrorResponse { error: "Failed to read body".into(), code: "body_read_error".into() }).unwrap();
-        return Response::from_data(err).with_status_code(400).with_header(json_header());
-    }
-
-    let req: SetEmailStarredRequest = match serde_json::from_str(&body) {
+    let req: SetEmailStarredRequest = match read_json_body(request) {
         Ok(r) => r,
-        Err(_) => {
-            let err = serde_json::to_vec(&ErrorResponse { error: "Invalid JSON".into(), code: "invalid_json".into() }).unwrap();
-            return Response::from_data(err).with_status_code(422).with_header(json_header());
-        }
+        Err(resp) => return resp,
     };
 
     if !user.emailIds.contains(&req.uid) {
@@ -532,18 +521,9 @@ pub fn get_public_keys(
         }
     };
 
-    let mut body = String::new();
-    if request.as_reader().read_to_string(&mut body).is_err() {
-        let err = serde_json::to_vec(&ErrorResponse { error: "Failed to read body".into(), code: "body_read_error".into() }).unwrap();
-        return Response::from_data(err).with_status_code(400).with_header(json_header());
-    }
-
-    let req: GetPublicKeysRequest = match serde_json::from_str(&body) {
+    let req: GetPublicKeysRequest = match read_json_body(request) {
         Ok(r) => r,
-        Err(_) => {
-            let err = serde_json::to_vec(&ErrorResponse { error: "Invalid JSON".into(), code: "invalid_json".into() }).unwrap();
-            return Response::from_data(err).with_status_code(422).with_header(json_header());
-        }
+        Err(resp) => return resp,
     };
 
     let domain = &user_storage.domain;
@@ -646,19 +626,18 @@ pub fn send_encrypted(
         }
     };
 
-    let mut body = String::new();
-    if request.as_reader().read_to_string(&mut body).is_err() {
-        let err = serde_json::to_vec(&ErrorResponse { error: "Failed to read body".into(), code: "body_read_error".into() }).unwrap();
+    let req: SendEncryptedRequest = match read_json_body(request) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+
+    if req.recipients.is_empty() || req.recipients.len() > MAX_RECIPIENTS {
+        let err = serde_json::to_vec(&ErrorResponse {
+            error: format!("Provide between 1 and {} recipients", MAX_RECIPIENTS),
+            code: "invalid_recipients".into(),
+        }).unwrap();
         return Response::from_data(err).with_status_code(400).with_header(json_header());
     }
-
-    let req: SendEncryptedRequest = match serde_json::from_str(&body) {
-        Ok(r) => r,
-        Err(_) => {
-            let err = serde_json::to_vec(&ErrorResponse { error: "Invalid JSON".into(), code: "invalid_json".into() }).unwrap();
-            return Response::from_data(err).with_status_code(422).with_header(json_header());
-        }
-    };
 
     let domain = emailutils::get_server_domain();
     let sender_address = format!("{}@{}", user.username, domain);
@@ -703,7 +682,12 @@ pub fn send_encrypted(
         userid: user.uid,
         from: sender_address.clone(),
         to: req.localcopy.to.clone(),
-        timestamp: req.localcopy.timestamp,
+        // Server clock, not the client's: a caller-supplied timestamp can be set
+        // arbitrarily far in the past or future to reorder or hide a sent message.
+        timestamp: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(req.localcopy.timestamp),
         publicKeyHash: crate::utils::Sha256Hash(pk_hash_bytes),
         raw_data: local_data,
         message_key: local_message_key,
@@ -909,18 +893,9 @@ pub fn list_recent_sent_email_uids(
         }
     };
 
-    let mut body = String::new();
-    if request.as_reader().read_to_string(&mut body).is_err() {
-        let err = serde_json::to_vec(&ErrorResponse { error: "Failed to read body".into(), code: "body_read_error".into() }).unwrap();
-        return Response::from_data(err).with_status_code(400).with_header(json_header());
-    }
-
-    let req: GetRecentEmailsRequest = match serde_json::from_str(&body) {
+    let req: GetRecentEmailsRequest = match read_json_body(request) {
         Ok(r) => r,
-        Err(_) => {
-            let err = serde_json::to_vec(&ErrorResponse { error: "Invalid JSON".into(), code: "invalid_json".into() }).unwrap();
-            return Response::from_data(err).with_status_code(422).with_header(json_header());
-        }
+        Err(resp) => return resp,
     };
 
     let uids: Vec<u128> = user.sent_emails.iter().rev()
@@ -949,18 +924,9 @@ pub fn get_sent_email(
         }
     };
 
-    let mut body = String::new();
-    if request.as_reader().read_to_string(&mut body).is_err() {
-        let err = serde_json::to_vec(&ErrorResponse { error: "Failed to read body".into(), code: "body_read_error".into() }).unwrap();
-        return Response::from_data(err).with_status_code(400).with_header(json_header());
-    }
-
-    let req: GetEmailRequest = match serde_json::from_str(&body) {
+    let req: GetEmailRequest = match read_json_body(request) {
         Ok(r) => r,
-        Err(_) => {
-            let err = serde_json::to_vec(&ErrorResponse { error: "Invalid JSON".into(), code: "invalid_json".into() }).unwrap();
-            return Response::from_data(err).with_status_code(422).with_header(json_header());
-        }
+        Err(resp) => return resp,
     };
 
     if !user.sent_emails.contains(&req.uid) {
@@ -1002,18 +968,9 @@ pub fn get_sent_emails_bulk(
         }
     };
 
-    let mut body = String::new();
-    if request.as_reader().read_to_string(&mut body).is_err() {
-        let err = serde_json::to_vec(&ErrorResponse { error: "Failed to read body".into(), code: "body_read_error".into() }).unwrap();
-        return Response::from_data(err).with_status_code(400).with_header(json_header());
-    }
-
-    let req: GetEmailsBulkRequest = match serde_json::from_str(&body) {
+    let req: GetEmailsBulkRequest = match read_json_body(request) {
         Ok(r) => r,
-        Err(_) => {
-            let err = serde_json::to_vec(&ErrorResponse { error: "Invalid JSON".into(), code: "invalid_json".into() }).unwrap();
-            return Response::from_data(err).with_status_code(422).with_header(json_header());
-        }
+        Err(resp) => return resp,
     };
 
     let allowed_uids: Vec<u128> = req.uids.into_iter()

@@ -66,6 +66,12 @@ fn make_client_tls_config() -> Arc<ClientConfig> {
     Arc::new(config)
 }
 
+/// Generous multiple of the RFC 5321 512-octet reply-line limit.
+const MAX_RESPONSE_LINE: usize = 8192;
+
+/// Cap on the number of lines in a single multiline SMTP reply.
+const MAX_RESPONSE_LINES: usize = 128;
+
 pub struct EmailSendingFSM {
     stream: Option<MaybeTlsClientStream>,
     tls_config: Arc<ClientConfig>,
@@ -100,6 +106,15 @@ impl EmailSendingFSM {
                 break;
             }
             line.push(byte[0]);
+            // The peer here is a remote MTA we do not control. RFC 5321 caps a
+            // reply line at 512 octets; without a bound, a hostile server can
+            // stream an endless "line" and exhaust our memory.
+            if line.len() > MAX_RESPONSE_LINE {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "SMTP response line exceeded the maximum length",
+                ));
+            }
         }
         if line.last() == Some(&b'\r') {
             line.pop();
@@ -124,6 +139,12 @@ impl EmailSendingFSM {
             lines.push(line);
             if is_last {
                 return Ok((code, lines));
+            }
+            if lines.len() >= MAX_RESPONSE_LINES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "SMTP multiline response exceeded the maximum number of lines",
+                ));
             }
         }
     }

@@ -234,7 +234,17 @@ impl EmailReceivingFSM {
                     .map(|s| s.trim().eq_ignore_ascii_case("LAST"))
                     .unwrap_or(false);
 
-                
+                // BDAT is a second path into 'raw_data' and must honour the same
+                // advertised SIZE limit as DATA - otherwise a client can stream
+                // unbounded chunks and exhaust server memory.
+                if chunk_size > MAX_MESSAGE_SIZE
+                    || self.email.raw_data.len().saturating_add(chunk_size) > MAX_MESSAGE_SIZE
+                {
+                    stream.write_all(b"552 5.3.4 Message size exceeds limit\r\n")?;
+                    stream.flush()?;
+                    return Err(io::Error::new(io::ErrorKind::Other, "BDAT chunk exceeds size limit"));
+                }
+
                 let buffered = &data[pos..];
                 let take = buffered.len().min(chunk_size);
                 self.email.raw_data.extend_from_slice(&buffered[..take]);
@@ -248,6 +258,11 @@ impl EmailReceivingFSM {
                     let n = stream.read(&mut tmp[..to_read])?;
                     if n == 0 { break; }
                     self.email.raw_data.extend_from_slice(&tmp[..n]);
+                    if self.email.raw_data.len() > MAX_MESSAGE_SIZE {
+                        stream.write_all(b"552 5.3.4 Message size exceeds limit\r\n")?;
+                        stream.flush()?;
+                        return Err(io::Error::new(io::ErrorKind::Other, "message exceeds size limit"));
+                    }
                     remaining -= n;
                 }
 
@@ -274,7 +289,6 @@ impl EmailReceivingFSM {
                         if !self.is_tls {
                             response.push_str("250-STARTTLS\r\n");
                         }
-                        response.push_str("250-AUTH PLAIN LOGIN\r\n");
                         response.push_str("250-8BITMIME\r\n");
                         response.push_str("250-ENHANCEDSTATUSCODES\r\n");
                         response.push_str("250-OPNTRN\r\n");

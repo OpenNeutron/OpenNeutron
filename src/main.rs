@@ -129,6 +129,11 @@ fn handle_smtp_connection(
     domain: String,
     dkim_enabled: bool,
 ) -> Result<()> {
+    // Without deadlines an idle or slow-drip connection pins a thread forever,
+    // so a handful of open sockets can starve the SMTP listener.
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(120)))?;
+    stream.set_write_timeout(Some(std::time::Duration::from_secs(120)))?;
+
     let mut stream = MaybeTlsStream::Plain(stream);
     stream.write_all(format!("220 {} ESMTP ready\r\n", domain).as_bytes())?;
     stream.flush()?;
@@ -253,50 +258,54 @@ fn handle_smtp_connection(
 fn run_server(user_storage: Arc<UserStorage>, email_storage: Arc<EmailStorage>, api_port: u16) -> Result<()> {
     use tiny_http::Method;
     use api::endpoints;
+    use api::RouteAuth::{Open, Authenticated, Admin};
 
     let server = Server::http(format!("0.0.0.0:{}", api_port)).unwrap();
     let mut router = Router::new(Arc::clone(&user_storage), Arc::clone(&email_storage));
 
-    
-    router.add_route(Method::Post, "/api/auth/login",     false, endpoints::auth::login);
-    router.add_route(Method::Post, "/api/user/register",  false, endpoints::user::register);
+    // Unauthenticated.
+    router.add_route(Method::Post, "/api/auth/login",     Open, endpoints::auth::login);
+    router.add_route(Method::Post, "/api/user/register",  Open, endpoints::user::register);
 
-    
-    router.add_route(Method::Post,      "/api/user/setup",          true,    endpoints::user::setup_password);
-    router.add_route(Method::Post,      "/api/user/credentials",    true,    endpoints::user::set_credentials);
-    router.add_route(Method::Get,       "/api/user/me",             true,    endpoints::user::get_me);
-    router.add_route(Method::Get,       "/api/me",                  true,    endpoints::user::get_me);
-    router.add_route(Method::Get,       "/api/admin/users",         true,    endpoints::admin::list_users);
-    router.add_route(Method::Post,      "/api/admin/users",         true,    endpoints::admin::add_user);
-    router.add_route(Method::Delete,    "/api/admin/users",         true,    endpoints::admin::delete_user);
-    router.add_route(Method::Post,      "/api/admin/users/credentials", true, endpoints::admin::set_credentials);
-    router.add_route(Method::Post,      "/api/admin/users/admin",   true,    endpoints::admin::set_admin);
-    router.add_route(Method::Get,       "/api/admin/disk-usage",    true,    endpoints::admin::disk_usage);
-    
-    router.add_route(Method::Post,      "/api/email/get",        true,  endpoints::email::get_email);
-    router.add_route(Method::Post,      "/api/email/bulk",       true,  endpoints::email::get_emails_bulk);
-    router.add_route(Method::Post,      "/api/email/list",       true,  endpoints::email::list_email_uids);
-    router.add_route(Method::Post,      "/api/email/delete",     true,  endpoints::email::delete_email);
-    router.add_route(Method::Post,      "/api/email/set",        true,  endpoints::email::set_email_bytes);
-    router.add_route(Method::Post,      "/api/email/recent",          true,  endpoints::email::list_recent_email_uids);
-    router.add_route(Method::Post,      "/api/email/send",            true,  endpoints::email::send_email);
-    router.add_route(Method::Post,      "/api/email/read",            true,  endpoints::email::mark_email_read);
-    router.add_route(Method::Post,      "/api/email/unread",          true,  endpoints::email::mark_email_unread);
-    router.add_route(Method::Post,      "/api/email/star",            true,  endpoints::email::set_email_starred);
-    router.add_route(Method::Post,      "/api/email/publickeys",      true,  endpoints::email::get_public_keys);
-    router.add_route(Method::Post,      "/api/email/sendencrypted",   true,  endpoints::email::send_encrypted);
-    router.add_route(Method::Post,      "/api/email/sent/list",       true,  endpoints::email::list_sent_email_uids);
-    router.add_route(Method::Post,      "/api/email/sent/recent",     true,  endpoints::email::list_recent_sent_email_uids);
-    router.add_route(Method::Post,      "/api/email/sent/get",        true,  endpoints::email::get_sent_email);
-    router.add_route(Method::Post,      "/api/email/sent/bulk",       true,  endpoints::email::get_sent_emails_bulk);
-    
-    router.add_route(Method::Get,       "/api/group/list",            true,  endpoints::group::list_groups);
-    router.add_route(Method::Post,      "/api/group/create",          true,  endpoints::group::create_group);
-    router.add_route(Method::Post,      "/api/group/get",             true,  endpoints::group::get_group);
-    router.add_route(Method::Post,      "/api/group/update",          true,  endpoints::group::update_group);
-    router.add_route(Method::Post,      "/api/group/delete",          true,  endpoints::group::delete_group);
-    router.add_route(Method::Post,      "/api/group/add-email",       true,  endpoints::group::add_email_to_group);
-    router.add_route(Method::Post,      "/api/group/remove-email",    true,  endpoints::group::remove_email_from_group);
+    // Any signed-in account, acting on its own data.
+    router.add_route(Method::Post,      "/api/user/setup",          Authenticated, endpoints::user::setup_password);
+    router.add_route(Method::Post,      "/api/user/credentials",    Authenticated, endpoints::user::set_credentials);
+    router.add_route(Method::Get,       "/api/user/me",             Authenticated, endpoints::user::get_me);
+    router.add_route(Method::Get,       "/api/me",                  Authenticated, endpoints::user::get_me);
+
+    // Administrators only. These routes act on *other* accounts, so a valid
+    // session is not enough - the router enforces 'is_admin' before dispatching.
+    router.add_route(Method::Get,       "/api/admin/users",             Admin, endpoints::admin::list_users);
+    router.add_route(Method::Post,      "/api/admin/users",             Admin, endpoints::admin::add_user);
+    router.add_route(Method::Delete,    "/api/admin/users",             Admin, endpoints::admin::delete_user);
+    router.add_route(Method::Post,      "/api/admin/users/credentials", Admin, endpoints::admin::set_credentials);
+    router.add_route(Method::Post,      "/api/admin/users/admin",       Admin, endpoints::admin::set_admin);
+    router.add_route(Method::Get,       "/api/admin/disk-usage",        Admin, endpoints::admin::disk_usage);
+
+    router.add_route(Method::Post,      "/api/email/get",        Authenticated,  endpoints::email::get_email);
+    router.add_route(Method::Post,      "/api/email/bulk",       Authenticated,  endpoints::email::get_emails_bulk);
+    router.add_route(Method::Post,      "/api/email/list",       Authenticated,  endpoints::email::list_email_uids);
+    router.add_route(Method::Post,      "/api/email/delete",     Authenticated,  endpoints::email::delete_email);
+    router.add_route(Method::Post,      "/api/email/set",        Authenticated,  endpoints::email::set_email_bytes);
+    router.add_route(Method::Post,      "/api/email/recent",          Authenticated,  endpoints::email::list_recent_email_uids);
+    router.add_route(Method::Post,      "/api/email/send",            Authenticated,  endpoints::email::send_email);
+    router.add_route(Method::Post,      "/api/email/read",            Authenticated,  endpoints::email::mark_email_read);
+    router.add_route(Method::Post,      "/api/email/unread",          Authenticated,  endpoints::email::mark_email_unread);
+    router.add_route(Method::Post,      "/api/email/star",            Authenticated,  endpoints::email::set_email_starred);
+    router.add_route(Method::Post,      "/api/email/publickeys",      Authenticated,  endpoints::email::get_public_keys);
+    router.add_route(Method::Post,      "/api/email/sendencrypted",   Authenticated,  endpoints::email::send_encrypted);
+    router.add_route(Method::Post,      "/api/email/sent/list",       Authenticated,  endpoints::email::list_sent_email_uids);
+    router.add_route(Method::Post,      "/api/email/sent/recent",     Authenticated,  endpoints::email::list_recent_sent_email_uids);
+    router.add_route(Method::Post,      "/api/email/sent/get",        Authenticated,  endpoints::email::get_sent_email);
+    router.add_route(Method::Post,      "/api/email/sent/bulk",       Authenticated,  endpoints::email::get_sent_emails_bulk);
+
+    router.add_route(Method::Get,       "/api/group/list",            Authenticated,  endpoints::group::list_groups);
+    router.add_route(Method::Post,      "/api/group/create",          Authenticated,  endpoints::group::create_group);
+    router.add_route(Method::Post,      "/api/group/get",             Authenticated,  endpoints::group::get_group);
+    router.add_route(Method::Post,      "/api/group/update",          Authenticated,  endpoints::group::update_group);
+    router.add_route(Method::Post,      "/api/group/delete",          Authenticated,  endpoints::group::delete_group);
+    router.add_route(Method::Post,      "/api/group/add-email",       Authenticated,  endpoints::group::add_email_to_group);
+    router.add_route(Method::Post,      "/api/group/remove-email",    Authenticated,  endpoints::group::remove_email_from_group);
     for request in server.incoming_requests() {
         //debug!("[API] {} {}", request.method(), request.url());
         router.handle_request(request);

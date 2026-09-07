@@ -138,11 +138,25 @@ pub fn hash_password(password_hash_string: String) -> Sha256Hash {
     sha256_hash(password_hash_string.as_bytes())
 }
 
-pub fn public_key_from_string(public_key_string: String) -> PublicKey {
-    
-    let decoded = STANDARD.decode(public_key_string).expect("Invalid base64 public key");
-    PublicKey(decoded)
+/// Parse a base64 SPKI public key supplied by a client.
+///
+/// This runs on untrusted input, so it never panics: malformed base64 or a blob
+/// that is not a usable RSA SPKI key is reported as an error for the caller to
+/// turn into a 4xx response.
+pub fn public_key_from_string(public_key_string: &str) -> Result<PublicKey, String> {
+    let decoded = STANDARD
+        .decode(public_key_string.trim())
+        .map_err(|e| format!("invalid base64 public key: {}", e))?;
+    if decoded.is_empty() || decoded.len() > MAX_PUBLIC_KEY_BYTES {
+        return Err("public key has an implausible length".to_string());
+    }
+    RsaPublicKey::from_public_key_der(&decoded)
+        .map_err(|e| format!("not a valid RSA SPKI public key: {}", e))?;
+    Ok(PublicKey(decoded))
 }
+
+/// An RSA-8192 SPKI blob is a little over 1 KiB; anything past this is junk.
+const MAX_PUBLIC_KEY_BYTES: usize = 4096;
 
 
 

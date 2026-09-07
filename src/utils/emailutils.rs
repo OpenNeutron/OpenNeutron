@@ -3,6 +3,7 @@ use crate::utils::dkim::DkimSigner;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use once_cell::sync::OnceCell;
+use rand::RngCore;
 
 static DKIM_SIGNER: OnceCell<Arc<DkimSigner>> = OnceCell::new();
 static SERVER_DOMAIN: OnceCell<String> = OnceCell::new();
@@ -23,11 +24,23 @@ pub fn get_server_domain() -> &'static str {
     SERVER_DOMAIN.get().map(|s| s.as_str()).unwrap_or("localhost")
 }
 
+/// Build a per-user email UID.
+///
+/// The low half carries the send time in its top 32 bits (so UIDs still sort by
+/// arrival) and 32 random bits below it. A pure second-resolution timestamp
+/// collides whenever a user receives two messages in the same second, and since
+/// blobs are stored under '<uid>.bin' a collision silently overwrites the older
+/// message.
 pub fn generate_email_uid(user: &User) -> u128 {
-    
-    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-    let uid = ((user.uid as u128) << 64) | (timestamp as u128);
-    uid
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut entropy = [0u8; 4];
+    rand::rngs::OsRng.fill_bytes(&mut entropy);
+    let nonce = u32::from_be_bytes(entropy) as u64;
+    let low = (timestamp << 32) | nonce;
+    ((user.uid as u128) << 64) | (low as u128)
 }
 
 /// Resolve MX record for a domain. Returns the lowest-priority MX host, or falls
@@ -36,13 +49,22 @@ pub fn resolve_mx(domain: &str) -> Option<String> {
     use std::net::UdpSocket;
     use std::time::Duration;
 
-    let query = build_mx_query(domain);
+    // A random transaction ID plus a connected socket is the minimum defence
+    // against off-path answer spoofing: a fixed ID lets anyone who can guess the
+    // source port inject a forged MX pointing mail at a host they control.
+    let txid = random_txid();
+    let query = build_mx_query(domain, txid);
     let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
     let _ = socket.set_read_timeout(Some(Duration::from_secs(5)));
-    socket.send_to(&query, "8.8.8.8:53").ok()?;
+    socket.connect(RESOLVER).ok()?;
+    socket.send(&query).ok()?;
 
     let mut buf = [0u8; 4096];
-    let (len, _) = socket.recv_from(&mut buf).ok()?;
+    let len = socket.recv(&mut buf).ok()?;
+    if !response_matches_query(&buf[..len], txid) {
+        log::warn!("[DNS] Discarded MX response for '{}' that did not match the query", domain);
+        return None;
+    }
     let records = parse_mx_response(&buf[..len]);
 
     if records.is_empty() {
@@ -54,10 +76,29 @@ pub fn resolve_mx(domain: &str) -> Option<String> {
     }
 }
 
-fn build_mx_query(domain: &str) -> Vec<u8> {
+pub(crate) const RESOLVER: &str = "8.8.8.8:53";
+
+pub(crate) fn random_txid() -> u16 {
+    let mut bytes = [0u8; 2];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    u16::from_be_bytes(bytes)
+}
+
+/// Accept a datagram only if it is a response to the transaction we sent.
+pub(crate) fn response_matches_query(data: &[u8], txid: u16) -> bool {
+    if data.len() < 12 {
+        return false;
+    }
+    let id = u16::from_be_bytes([data[0], data[1]]);
+    let is_response = data[2] & 0x80 != 0;
+    id == txid && is_response
+}
+
+fn build_mx_query(domain: &str, txid: u16) -> Vec<u8> {
     let mut q = Vec::new();
-    // Header: ID=0x1234, flags=0x0100 (RD), QDCOUNT=1
-    q.extend_from_slice(&[0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    // Header: random ID, flags=0x0100 (RD), QDCOUNT=1
+    q.extend_from_slice(&txid.to_be_bytes());
+    q.extend_from_slice(&[0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
     for label in domain.trim_end_matches('.').split('.') {
         let b = label.as_bytes();
         q.push(b.len() as u8);

@@ -8,12 +8,29 @@ pub fn json_header() -> Header {
     Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap()
 }
 
-pub fn cors_headers() -> Vec<Header> {
-    vec![
-        Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap(),
+/// CORS headers for an API response.
+///
+/// Only origins explicitly listed in 'server.cors_allowed_origins' are echoed
+/// back. A wildcard is deliberately never emitted: it would let script on any
+/// site call this API with a token it has obtained, and the bundled SPA is
+/// same-origin so it needs no CORS headers at all.
+pub fn cors_headers(request_origin: Option<&str>) -> Vec<Header> {
+    let allowed = &crate::config::get().server.cors_allowed_origins;
+    let origin = match request_origin {
+        Some(o) if allowed.iter().any(|a| a == o) => o,
+        _ => return Vec::new(),
+    };
+
+    let mut headers = vec![
         Header::from_bytes(&b"Access-Control-Allow-Methods"[..], &b"GET, POST, PUT, DELETE, OPTIONS"[..]).unwrap(),
         Header::from_bytes(&b"Access-Control-Allow-Headers"[..], &b"Authorization, Content-Type"[..]).unwrap(),
-    ]
+        // Responses differ per origin, so caches must not share them.
+        Header::from_bytes(&b"Vary"[..], &b"Origin"[..]).unwrap(),
+    ];
+    if let Ok(h) = Header::from_bytes(&b"Access-Control-Allow-Origin"[..], origin.as_bytes()) {
+        headers.push(h);
+    }
+    headers
 }
 
 #[derive(Deserialize)]
@@ -26,6 +43,7 @@ pub struct LoginRequest {
 pub struct LoginResponse {
     pub token: String,
     pub force_reset: bool,
+    pub is_admin: bool,
     pub username: String,
     pub public_key: Option<String>,
     pub unread_emails: usize,
@@ -78,6 +96,10 @@ pub struct AdminUsersResponse {
 #[derive(Deserialize)]
 pub struct AdminCreateUserRequest {
     pub username: String,
+    /// Whether the new account is an administrator. Defaults to 'false' - an
+    /// omitted field must never silently create a privileged account.
+    #[serde(default)]
+    pub is_admin: bool,
 }
 
 #[derive(Deserialize)]
@@ -110,6 +132,9 @@ pub struct UserSetCredentialsRequest {
 pub struct AdminCreateUserResponse {
     pub message: String,
     pub force_reset: bool,
+    /// One-time secret the new user must present as their password on first
+    /// login. Shown only in this response - it is not retrievable afterwards.
+    pub setup_token: String,
 }
 
 #[derive(Serialize)]
@@ -133,6 +158,15 @@ pub struct ErrorResponse {
 #[derive(Serialize)]
 pub struct MessageResponse {
     pub message: String,
+}
+
+#[derive(Serialize)]
+pub struct AdminResetResponse {
+    pub message: String,
+    /// One-time secret for the reset account, present only when the reset put the
+    /// account back into the setup state (no password supplied).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub setup_token: Option<String>,
 }
 
 
@@ -200,10 +234,18 @@ pub struct SetupPasswordRequest {
 
 #[derive(Deserialize)]
 pub struct SendEmailRequest {
+    /// Accepted for backwards compatibility but ignored: the envelope sender is
+    /// always the authenticated account.
+    #[serde(default)]
     pub from: String,
     pub to: Vec<String>,
-    pub data: String,        
+    pub data: String,
+    /// Accepted for backwards compatibility but ignored: delivery targets are
+    /// resolved from each recipient's MX record, never from the request body.
+    #[serde(default)]
     pub smtp_host: String,
+    #[serde(default)]
+    #[allow(dead_code)]
     pub smtp_port: Option<u16>,
 }
 

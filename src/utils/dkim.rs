@@ -324,7 +324,11 @@ fn dns_txt_lookup(hostname: &str) -> Vec<String> {
     use std::net::UdpSocket;
     use std::time::Duration;
 
-    let query = build_dns_query(hostname);
+    // The TXT record fetched here is the key that DKIM verification trusts, so a
+    // spoofed answer means an attacker chooses the verifying key. Use a random
+    // transaction ID and only accept a datagram that answers it.
+    let txid = crate::utils::emailutils::random_txid();
+    let query = build_dns_query(hostname, txid);
 
     let socket = match UdpSocket::bind("0.0.0.0:0") {
         Ok(s) => s,
@@ -332,23 +336,31 @@ fn dns_txt_lookup(hostname: &str) -> Vec<String> {
     };
     let _ = socket.set_read_timeout(Some(Duration::from_secs(5)));
 
-    if socket.send_to(&query, "8.8.8.8:53").is_err() {
+    if socket.connect(crate::utils::emailutils::RESOLVER).is_err() {
+        return vec![];
+    }
+    if socket.send(&query).is_err() {
         return vec![];
     }
 
     let mut buf = [0u8; 4096];
-    let len = match socket.recv_from(&mut buf) {
-        Ok((n, _)) => n,
+    let len = match socket.recv(&mut buf) {
+        Ok(n) => n,
         Err(_) => return vec![],
     };
+
+    if !crate::utils::emailutils::response_matches_query(&buf[..len], txid) {
+        return vec![];
+    }
 
     parse_dns_txt_response(&buf[..len])
 }
 
-fn build_dns_query(hostname: &str) -> Vec<u8> {
+fn build_dns_query(hostname: &str, txid: u16) -> Vec<u8> {
     let mut q = Vec::new();
-    
-    q.extend_from_slice(&[0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    // Header: random ID, flags=0x0100 (RD), QDCOUNT=1
+    q.extend_from_slice(&txid.to_be_bytes());
+    q.extend_from_slice(&[0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
     
     for label in hostname.trim_end_matches('.').split('.') {
         let b = label.as_bytes();
