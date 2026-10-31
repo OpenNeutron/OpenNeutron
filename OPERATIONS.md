@@ -992,6 +992,66 @@ other character, from an earlier escaped write. The page rendered it faithfully,
 which is how it was noticed. Repaired in place (`replace(name, chr(4967), '')`);
 the row is now `Dr. Wiza's server`, 17 characters.
 
+## Evidence attached to an appeal
+
+A banned member can attach pictures and a clip to their appeal. The feature is
+small; the shape is the point, because "a public page that accepts uploads" is a
+file host with extra steps.
+
+**Where the bytes live.** `/opt/sloth-bot/evidence` on the host, mounted into the
+container at `/var/lib/sloth-evidence`, `root 1000:1000`, mode `700`. Outside
+every served path: there is no URL that maps to the directory, and the app never
+writes there under a name the web layer knows. One directory per appeal, one file
+per attachment, named by the attachment's own uuid.
+
+**What is accepted.** Three pictures (PNG, JPEG, WebP, 5 MB each) and one clip
+(MP4, WebM, 25 MB), 29 MB in total. The type comes from the **first bytes**, never
+from the upload's declared `Content-Type` and never from the filename — an appeal
+page is available to anyone with a Discord account, so both of those are the
+client's claims. SVG and GIF are refused by construction (they are not in the
+signature table, and an SVG is a script host).
+
+**Who can read it.** Only a staff session, in the guild the appeal belongs to,
+through `GET /dashboard/evidence?id=<uuid>`: staff cookie, then `staffInGuild` on
+the row's own `guildId`, then the file. The response is
+`Content-Disposition: attachment`, `X-Content-Type-Options: nosniff`,
+`Cache-Control: private, no-store`, and a `sandbox` CSP, so even a file that got
+past the sniffer cannot execute on this origin. Every read is audited
+(`evidence.view`). The member's own page names the attachments and never links
+them; the dashboard's appeal detail lists them with sizes and download links.
+
+**How long it lives.** Withdrawing an appeal deletes the files immediately — the
+member ended the conversation. A decision starts a 30-day clock, and a six-hourly
+prune (`pruneExpired`, `unref`ed so it can never hold the process open) removes
+the bytes and the rows. The nightly archive does **not** carry this directory on
+purpose: it is third-party media with no archival obligation, and copying it every
+night would multiply the uploads by the retention window.
+
+**nginx.** Everything on `app.slothlee.xyz` keeps the 8 MB body cap. One exact
+location — `location = /appeal/submit` — gets 30 MB, because a 25 MB clip plus
+three pictures plus multipart framing does not fit in 8. A larger body anywhere
+else is still refused by nginx before it reaches Node.
+
+**What the tests caught, and what the drill caught.** The first version named the
+file with one id and let Postgres generate another for the row, so every
+attachment would have been a row pointing at nothing; the storage test compares
+the row against the filesystem and failed it. The drill caught the other one: a
+successful submission *with files* redirected to `flash=unknown`, because the
+flash started as `unknown` for the failure paths and nothing overwrote it on
+success — the appeal was filed, the page said it had not been.
+
+**Proven live, through nginx** (`--resolve app.slothlee.xyz:443:127.0.0.1`, so
+the real vhost and the real body cap were in the path):
+
+```
+submit 2 files -> 302 ?flash=sent        rows 2, both real files on disk
+download (staff) -> 200, attachment, sha256 matches the row, both files
+download (no cookie) -> 302 /login
+download (member cookie) -> 302 /login
+submit an .html dressed as .png -> 302 ?flash=badevidence, no second appeal row
+cleanup -> 0 rows, 0 files
+```
+
 ## DNS: why the box stopped resolving twice in one day
 
 `systemd-resolved` answered `SERVFAIL` (rcode 2) to **every** query while
