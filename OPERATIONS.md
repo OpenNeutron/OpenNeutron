@@ -1011,6 +1011,47 @@ A `-C` in tar applies to the names that follow it, so `-C / sloth-site` asks for
 `/sloth-site` and fails loudly; the first version of this edit did exactly that and
 the run refused to upload rather than shipping a snapshot missing the site.
 
+## Who is told about an appeal, and who may decide it
+
+The queues on the dashboard are per server: `/api/appeals` is scoped to the
+tenant the staff session resolves to, the decision route 404s an appeal id from
+any other server, and the evidence download re-checks `staffInGuild`. What was
+missing was the part that makes any of that useful — somebody being told.
+
+**An appeal is announced in the server it belongs to.** `src/services/security/
+appeal-notice.js` posts into the guild's appeal channel, falling back to its log
+channel, and refuses to guess: no channel configured means no post, a warning in
+the log, and the appeal sitting in the dashboard queue as before. The message
+carries the member, their statement (defused and bounded), the attachment count,
+what Accept actually does for this kind of appeal, a link opening that server's
+own queue, and the same Accept/Deny buttons the quarantine flow uses.
+
+**The buttons are the same decision path.** Whoever presses one needs moderator
+rank and Moderate Members in that server, and the press calls the same
+`settleAppeal` the dashboard calls. `settleAppeal` now refuses outright when the
+guild it was handed is not the appeal's guild — the lift acts on the guild object
+it is given, so before this an appeal could in principle be decided against the
+wrong server's ban list. The check is the cheapest possible tenancy proof and it
+runs before anything is touched.
+
+**Filed and announced are separate outcomes.** A message Discord refuses (no
+permissions, deleted channel, rate limit) must not undo an appeal the member
+already sent: `announceAppeal` returns `posted` / `nochannel` / `failed` and never
+throws, and the portal's flash still says the appeal was sent.
+
+**If a server has no appeal channel set**, that is a setup gap, not a bug: the
+Settings "Appeal channel" field and the setup-readiness page both name it. Until
+it is set, appeals post to the log channel if there is one, and otherwise sit in
+the dashboard only.
+
+**Proven live** in the test guild: ban the dummy bot user, file from the member
+page (`302 → ?flash=sent`), and the bot posts in `#general` with the statement
+quoted, the dashboard link carrying the guild id, and both buttons bound to that
+appeal id; then the message is deleted, the ban lifted, and the guild setting put
+back. A drill that fails half way must also put the guild back — the script now
+traps its own exit to unban and un-configure, because a proof that leaves a ban
+behind is a worse failure than the one it was measuring.
+
 ## Evidence attached to an appeal
 
 A banned member can attach pictures and a clip to their appeal. The feature is
