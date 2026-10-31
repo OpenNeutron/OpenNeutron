@@ -1011,6 +1011,32 @@ A `-C` in tar applies to the names that follow it, so `-C / sloth-site` asks for
 `/sloth-site` and fails loudly; the first version of this edit did exactly that and
 the run refused to upload rather than shipping a snapshot missing the site.
 
+## The appeal's audit trail
+
+Five rows, all in `audit_events`, all guild-scoped:
+
+```
+appeal.submit     actor = the member        {appealId, surface: portal|discord}
+appeal.withdraw   actor = the member        {appealId, surface: portal}
+evidence.view     actor = staff             {appealId, evidenceId, bytes}
+appeal.accepted   actor = the decider       {appealId, userId, lift: ban|quarantine}
+appeal.denied     actor = the decider       {appealId, userId, lift: null}
+```
+
+`/api/appeals?id=` reads the decision back **out of that trail** rather than from
+a column on the appeal, so the screen cannot claim a decider the trail does not
+have: a settled appeal with no row reads `decidedBy: null` and the detail says
+*"decided — no audit row found for this decision"* instead of a blank.
+
+`/api/audit` is a different trail (`action_audit`, the Action Center's). An
+appeal decision made in the dashboard appears in both; a decision made from the
+Discord buttons appears only in `audit_events`, which is why the detail reads
+from there — the embed trail is a notification, the audit row is the record.
+
+Two things to remember when driving this by hand: `/api/action` takes the CSRF
+field **`csrf`** (not `csrfToken`), and every staff read needs `?guild=` unless
+the viewer is staff in exactly one server.
+
 ## The DM a banned member gets, and why it goes first
 
 `src/services/security/ban-notice.js` sends one message when the bot bans
