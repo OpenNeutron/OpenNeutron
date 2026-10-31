@@ -929,6 +929,55 @@ POST /appeal/withdraw                                   -> ?flash=withdrawn, row
 cleanup                                                 -> 0 appeal rows, 0 quarantine rows
 ```
 
+**Deciding it exposed two bugs that had been there all along.** Both lived in
+`settleAppeal`, which is the *only* way a decision is written — the Discord
+button and the dashboard press both call it, so neither bug was specific to the
+new page.
+
+1. **Accepting only knew how to release a quarantine.** It fetched the member and
+   refused with "I cannot see that member, so I have not closed the appeal" when
+   they were not in the server. A banned member is never in the server — so the
+   one person the page exists for was the one person whose appeal could not be
+   accepted. `settleAppeal` now reads the ban state first (`banState`: banned,
+   not banned, or *unknown*), lifts a ban with `guild.bans.remove(id, reason)`,
+   releases a quarantine as before, and refuses by name in the third case. An
+   unknown state (a Discord failure) refuses and writes nothing — the same rule
+   as everywhere else here: "Discord did not answer" is never read as "clear".
+2. **The read-only exception never reached the decision.** `appealWriteBlocked`
+   takes a guild id so an exempted guild can still decide appeals while the
+   process is read-only — and `settleAppeal` called it with no guild at all, so
+   the exception silently did not exist and the refusal blamed read-only mode
+   instead of the call site. The row is now loaded first and its `guildId`
+   passed to the gate.
+
+Both are the "a write gate that forgets the guild id" class this file already
+warns about, and neither showed up in tests because **no test had ever accepted
+an appeal** — the existing coverage decided one appeal and decided it *denied*.
+
+**Proven live, twice:**
+
+```
+# a member who is neither banned nor present
+accept  -> {"ok":false,"error":"That member is neither banned nor in the server,
+            so there is nothing for me to lift — deny the appeal instead."}  http=400
+status  -> still pending (a refusal writes nothing)
+deny    -> 200 {"status":"denied"}; decided_at set; audit appeal.denied {lift:null}
+page    -> "not accepted"
+
+# a really banned member (our own dummy bot user, banned over REST, no gateway)
+start   -> 200 BANNED
+page    -> chip "banned", the form
+submit  -> ?flash=sent, row pending
+accept  -> 200 {"status":"accepted"}
+after   -> 404 not banned          <-- the ban was actually lifted
+audit   -> appeal.accepted {lift:"ban"}
+page    -> "accepted on today"
+```
+
+The ban was driven with REST only (`PUT /guilds/{id}/bans/{user}` from the
+sealed token inside the container) so no second gateway session ever touched the
+production bot, and the subject was our own dummy bot user, never a person.
+
 **What the drill does not prove: the OAuth exchange itself.** A real member
 sign-in needs a Discord account, and logging one in from this box is what the
 standing rule forbids. What is covered by tests: the cookie's signing, its
