@@ -878,6 +878,71 @@ apart — create / update / left in place / blocked — because a single "12
 changes" number hides the difference between adding a channel and being unable
 to read one.
 
+## The appeal page, for the person who cannot type in the server
+
+Every appeal route before this one lived inside Discord: a quarantined member
+gets a modal. That works while you are still in the server. A member who was
+**banned** has no channel to open a modal in, so the one person with the most
+reason to appeal had no door at all.
+
+`https://app.slothlee.xyz/appeal` is that door, and it is the only page on this
+box a non-staff person can sign in to.
+
+**Identity is a Discord sign-in, not a token.** The page reuses the same OAuth
+app as the staff door, but the destination decides which session is minted: a
+state blob whose `next` is exactly `/appeal` gets `sloth_member`, and everything
+else keeps the existing staff path. The member cookie is a different shape
+(`m.<userId>.<issuedAt>.<hmac>`, 2 hours) so it cannot be replayed as
+`sloth_staff`, and every staff endpoint reads only `sloth_staff`. `safeNext`
+still allowlists paths — `/appeal/anything` is not an entry, only the exact
+path.
+
+**It is server-rendered on purpose.** No bundle, no JavaScript, no CSP
+exception: the whole interaction is a form post. The page is
+`GET /appeal`, with `POST /appeal/submit`, `POST /appeal/withdraw`,
+`/appeal/login` and `/appeal/logout`. A cross-origin post is refused by an
+origin check before the cookie is even looked at, and the cookie itself is
+`SameSite=Lax`, so a cross-site form post arrives unauthenticated and is
+redirected to sign-in rather than acted on.
+
+**It shows only servers where you have a standing.** Signing in must not
+enumerate the bot's guild list to a stranger: the page filters to guilds where
+the member is banned or quarantined, plus any guild they already have an appeal
+in. A member with nothing outstanding sees an empty page — not a list of this
+bot's customers.
+
+**The gates are the ones the Discord flow already uses** — `submitPortalAppeal`
+goes through `appealWriteBlocked` (read-only mode with its per-guild exception,
+kill switch, lapsed subscription), one pending appeal per guild, two per six
+hours, 8 to 2000 characters. Nothing about the portal is a bypass; the only
+difference is that it does not need a channel to post in.
+
+**The drill that proved it** (`/root/appeal-drill.sh`, re-runnable):
+
+```
+quarantine 900000000000009001 in 1565572253624827965   -> 1 row
+mint a member cookie (`staff-session.mjs <id> --member`) -> 109 bytes, 2h
+GET /appeal                                             -> the server, "in quarantine", the form
+POST /appeal/submit                                     -> ?flash=sent, row `pending`
+POST /appeal/submit again                               -> ?flash=waiting (refused)
+POST /appeal/withdraw                                   -> ?flash=withdrawn, row `withdrawn`
+cleanup                                                 -> 0 appeal rows, 0 quarantine rows
+```
+
+**What the drill does not prove: the OAuth exchange itself.** A real member
+sign-in needs a Discord account, and logging one in from this box is what the
+standing rule forbids. What is covered by tests: the cookie's signing, its
+expiry, its refusal to be read as a staff session, the state allowlist, every
+gate, ownership on withdraw, and the page's escaping. What Discord owns: whether
+a given member's consent screen goes through — the callback branch for a member
+is a redirect to `/appeal` and a cookie, and nothing else.
+
+**Found while drilling:** the guild row for `1565572253624827965` stored its name
+as `፧D፧፧r፧. ፧W፧፧i፧፧z፧፧a፧'s server` — a stray U+1367 interleaved into every
+other character, from an earlier escaped write. The page rendered it faithfully,
+which is how it was noticed. Repaired in place (`replace(name, chr(4967), '')`);
+the row is now `Dr. Wiza's server`, 17 characters.
+
 ## DNS: why the box stopped resolving twice in one day
 
 `systemd-resolved` answered `SERVFAIL` (rcode 2) to **every** query while
