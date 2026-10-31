@@ -1071,10 +1071,15 @@ permissions, deleted channel, rate limit) must not undo an appeal the member
 already sent: `announceAppeal` returns `posted` / `nochannel` / `failed` and never
 throws, and the portal's flash still says the appeal was sent.
 
-**If a server has no appeal channel set**, that is a setup gap, not a bug: the
-Settings "Appeal channel" field and the setup-readiness page both name it. Until
-it is set, appeals post to the log channel if there is one, and otherwise sit in
-the dashboard only.
+**If a server has no appeal channel set**, the appeal goes to the server owner
+by DM instead — the one destination that is unambiguously staff. Posting a
+banned member's written appeal into a channel the server never designated for it
+would leak it to whoever happens to be reading; a DM to the person who owns the
+server does not. The message carries the statement, the file count, a link to
+that server's queue, and how to stop receiving them ("set an appeal channel in
+Settings"). If the owner cannot be messaged either, the appeal is still filed and
+the dashboard queue still holds it — but the run logs that nobody was told, which
+is the one outcome that is never silent-by-accident.
 
 **Proven live** in the test guild: ban the dummy bot user, file from the member
 page (`302 → ?flash=sent`), and the bot posts in `#general` with the statement
