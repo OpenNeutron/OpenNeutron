@@ -992,6 +992,25 @@ other character, from an earlier escaped write. The page rendered it faithfully,
 which is how it was noticed. Repaired in place (`replace(name, chr(4967), '')`);
 the row is now `Dr. Wiza's server`, 17 characters.
 
+## What the nightly archive carries of the stack itself
+
+The archive held the application's data but not the two things that define how it
+runs: `/opt/sloth-bot/docker-compose.yml` (all five containers, their volumes and
+env files) and `/opt/sloth-site` (the site's source, which lives in no repository
+and exists only as files on the box). A restored box would have had the data and
+no recipe for the stack.
+
+Both are in the archive now. The site member is `-C /opt sloth-site` with
+`node_modules` and `.next` excluded: 808 KB of source, not the 1.3 GB build tree.
+Two guards were added beside the round-trip check, because a backup that quietly
+loses the stack definition is the failure that only shows up on the worst day —
+`sloth-bot/docker-compose.yml` and `sloth-site/app/page.jsx` must both be listed
+in the decrypted archive or the run exits before uploading anything.
+
+A `-C` in tar applies to the names that follow it, so `-C / sloth-site` asks for
+`/sloth-site` and fails loudly; the first version of this edit did exactly that and
+the run refused to upload rather than shipping a snapshot missing the site.
+
 ## Evidence attached to an appeal
 
 A banned member can attach pictures and a clip to their appeal. The feature is

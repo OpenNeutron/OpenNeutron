@@ -59,17 +59,21 @@ BUNDLE_BYTES=$(stat -c %s /opt/backup-repo/mail-repo.bundle)
 [ "$BUNDLE_BYTES" -gt 65536 ] || { log "ERROR mail repository bundle is only ${BUNDLE_BYTES} bytes"; exit 1; }
 log "mail repository bundled (${BUNDLE_BYTES} bytes, $(git -C /opt/on rev-list --count main) commits)"
 
-tar czf "$WORK/state.tgz" -C /opt/on \
+# The site is built from /opt/sloth-site and lives in no repository: without it
+# the public pages survive only as a running container. Exclude the 1.3 GB of
+# node_modules and .next — 808 KB of source is the part that cannot be rebuilt.
+tar czf "$WORK/state.tgz" --exclude=node_modules --exclude=.next -C /opt/on \
   data/users.bin data/waitlist.json data/pending_users.json data/recovery.json \
   data/twofactor.json data/sessions.json data/ephemeral.json data/notes.json \
   data/aliases.json data/scheduled.json data/arrival.json data/push.json data/vapid.json data/imported.json data/pqkeys.json data/mailboxlog.json data/logkey.json data/webauthn.json data/pgpkeys.json data/reports.jsonl data/geoip.mmdb data/blobs data/static dkim config.yml \
-  -C /opt sloth-bot/.env sloth-bot/backup sloth-bot/bugreports sloth-bot/secrets.json sloth-bot/owner backup-repo \
+  -C /opt sloth-bot/.env sloth-bot/docker-compose.yml sloth-bot/backup sloth-bot/bugreports sloth-bot/secrets.json sloth-bot/owner backup-repo \
   -C / etc/nginx/sites-available etc/nginx/sites-enabled etc/nginx/conf.d \
   etc/postfix/main.cf etc/postfix/master.cf etc/postfix/recipients.pcre \
   etc/systemd/resolved.conf.d etc/unbound/unbound.conf.d \
   var/spool/cron/crontabs etc/letsencrypt/live etc/letsencrypt/archive etc/letsencrypt/renewal \
   -C / usr/local/bin/mail-health.sh usr/local/bin/mail-alert.sh usr/local/bin/mail-dns-watch.sh \
-  usr/local/bin/mail-offsite-backup.sh usr/local/bin/mail-recipients-sync.sh usr/local/bin/sloth-stack-watch.sh
+  usr/local/bin/mail-offsite-backup.sh usr/local/bin/mail-recipients-sync.sh usr/local/bin/sloth-stack-watch.sh \
+  -C /opt sloth-site
 
 gpg --batch --yes --quiet --symmetric --cipher-algo AES256 \
     --passphrase-file "$PASS_FILE" \
@@ -82,6 +86,8 @@ SHA=$(sha256sum "$WORK/slothmail-$STAMP.tgz.gpg" | cut -d' ' -f1)
 gpg --batch --yes --quiet --decrypt --passphrase-file "$PASS_FILE" \
     -o "$WORK/verify.tgz" "$WORK/slothmail-$STAMP.tgz.gpg" 2>/dev/null
 tar tzf "$WORK/verify.tgz" > /dev/null || { log "ERROR archive does not round-trip"; exit 1; }
+tar tzf "$WORK/verify.tgz" sloth-bot/docker-compose.yml > /dev/null 2>&1 || { log "ERROR the archive carries no stack definition (sloth-bot/docker-compose.yml)"; exit 1; }
+tar tzf "$WORK/verify.tgz" sloth-site/app/page.jsx > /dev/null 2>&1 || { log "ERROR the archive carries no site source (sloth-site/app)"; exit 1; }
 
 B64="$WORK/payload.b64"
 base64 -w0 "$WORK/slothmail-$STAMP.tgz.gpg" > "$B64"
