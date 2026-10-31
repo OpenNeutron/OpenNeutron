@@ -1011,6 +1011,38 @@ A `-C` in tar applies to the names that follow it, so `-C / sloth-site` asks for
 `/sloth-site` and fails loudly; the first version of this edit did exactly that and
 the run refused to upload rather than shipping a snapshot missing the site.
 
+## The DM a banned member gets, and why it goes first
+
+`src/services/security/ban-notice.js` sends one message when the bot bans
+someone: the server, the reason as written, `https://app.slothlee.xyz/appeal?s=<guild>`,
+who can read it, what they may attach, and that replying does nothing.
+
+**It is sent before `members.ban`, always.** After the ban lands the member
+shares no server with the bot and Discord refuses the DM (`50007 Cannot send
+messages to this user`) — so a notice sent afterwards would fail for exactly the
+people it is for. The ordering is asserted in `test/ban-notice.test.js` against
+the real moderation path (`['dm', 'ban']`), not against a mock of the notice.
+
+**A refused DM never stops a ban.** `dmBanNotice` returns `sent` / `blocked` /
+`unavailable` and never throws; `performModeration` carries it back as `notice`
+so a moderator can see the person was never told. Closed DMs are the common case
+and get a single info log line, no stack trace.
+
+**Softban is silent on purpose**: the member is unbanned immediately, so "you
+were banned from X" would be a false statement posted at the moment it is false.
+
+**The link focuses the page.** `/appeal?s=<guild>` shows only that server, and
+the id is checked against the standing the member actually has — an id for a
+server they have nothing in falls back to the full list, so a crafted link can
+neither invent a server nor hide the others. Signing in would otherwise drop
+which server the link was for, so the id is held in a 15-minute
+`sloth_appeal_focus` cookie scoped to `Path=/appeal` (HttpOnly, Secure,
+SameSite=Lax) instead of widening the OAuth `next` allowlist beyond `/appeal`.
+
+**What cannot be proven on this box**: delivery to a human inbox. Bots cannot DM
+bots, so the live proof covers the text, the link, the cookie and the focused
+page; delivery needs a human recipient to say they received it.
+
 ## Who is told about an appeal, and who may decide it
 
 The queues on the dashboard are per server: `/api/appeals` is scoped to the
