@@ -1648,3 +1648,26 @@ Every empty panel in the dashboard names one next step, from one table
 `/suggest` (never a command here; it is `/suggestion`) was found on the suggestions screen.
 
 If a screen's empty panel names nothing, the gate fails before the deploy, not after.
+
+## Looking at the dashboard
+
+Two pieces, both on the box:
+
+```sh
+# once: a browser
+sudo apt-get install -y --no-install-recommends chromium
+
+# a staff session, minted by the running process (never a Discord login)
+docker cp scripts/staff-session.mjs sloth-bot:/tmp/staff-session.mjs
+docker exec -u 0 sloth-bot node /tmp/staff-session.mjs <discord-user-id>
+docker cp sloth-bot:/tmp/staff-cookie.txt /root/staff-cookie.txt
+docker exec -u 0 sloth-bot rm -f /tmp/staff-cookie.txt /tmp/staff-session.mjs
+
+# look at a page
+node scripts/shot.mjs "https://app.slothlee.xyz/app?guild=<id>&page=logs" /tmp/logs.png \
+  --cookie /root/staff-cookie.txt
+```
+
+The cookie is a live credential for its 12 hours: keep it at mode 600, never in a log, a chat or
+a commit, and delete the file when the look is done. `shot.mjs` also prints each `.empty` panel's
+text and every failed request, which is usually faster than reading the screenshot.
