@@ -1173,6 +1173,27 @@ they are free to rejoin, but nobody has told them in their inbox. A quarantine
 the channel that cannot bounce; the dashboard line tells staff which case they are
 in instead of letting them assume the person was reached.
 
+## When the decision cannot be DM'd: the rejoin
+
+An accepted ban appeal's DM usually bounces (`blocked`, `50007`): at decision time
+the person is not in the server, and Discord only opens a DM with a shared guild.
+The rejoin is the one moment that changes, so the closure lives there too.
+
+`tellOnReturn()` runs in the join chain, after the blacklist and screen gates and
+before the welcome. It sends one DM — "welcome back, your appeal in <server> was
+accepted on <date>, that is why you can rejoin" — when all of these hold:
+
+* the appeal is **accepted** (a denial is not a welcome — a denied member cannot rejoin anyway)
+* it was decided in the last **30 days**
+* the decision's audit row says `memberTold` was **not** `sent` (someone who already read it is not told twice)
+
+A successful notice writes `appeal.member-told {appealId, userId, via: 'rejoin'}`
+with the bot as actor. No bot id, no row: an unattributable audit entry is worse
+than none.
+
+This path is **unit-tested only** — nothing in the test fleet can be made to join
+a server, so live proof would need a real person being unbanned and invited back.
+
 ## Evidence attached to an appeal
 
 A banned member can attach pictures and a clip to their appeal. The feature is
