@@ -1777,3 +1777,23 @@ leave while the bot is dead). If that file is missing, mail still works and the 
 The owner console's **Send a test alert** button writes a request file into
 `/opt/sloth-bot/alert-requests/`; the watchdog consumes it on its next run. The directory is owned
 `1000:1000` so the console can write it and nothing else can.
+
+### The stop switch (N4.3)
+
+One press in the owner console, or the file directly:
+
+```sh
+# stop everything, from the console's own container (uid 1000 owns the directory)
+docker exec -u 1000 owner-console sh -c 'printf "{\"stopped\":true,\"at\":\"$(date -u +%FT%TZ)\",\"by\":\"owner\"}" > /opt/sloth-bot/control/write-stop.json'
+# let writes back
+rm /opt/sloth-bot/control/write-stop.json
+# what the bot currently thinks (it re-reads every two seconds)
+docker exec sloth-bot node --input-type=module -e "const w=await import('/app/src/services/security/write-stop.js');console.log(w.writeStop())"
+```
+
+Every write path asks `readOnlyEnabled`/`readOnlyForGuild`/`writeBlocked`; the owner's stop is
+consulted **before** the `SLOTH_LEE_READONLY_EXCEPT` list, so an exempted server is stopped too.
+Reads — status, lists, history, the dashboard — keep working, which is the point: you stop changes,
+not visibility.
+
+A file that cannot be parsed stops writes and says so. It does not open the door.
