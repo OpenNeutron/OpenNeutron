@@ -1797,3 +1797,21 @@ Reads — status, lists, history, the dashboard — keep working, which is the p
 not visibility.
 
 A file that cannot be parsed stops writes and says so. It does not open the door.
+
+### Reading the action trail
+
+`action_audit` (not `audit_events`) is the per-attempt record: one row per action through the gate,
+written by `recordActionAttempt`, `surface` = `bot` or `dashboard`.
+
+```sh
+docker exec sloth-pg psql -U sloth -d sloth -c \
+  "select created_at, actor_id, kind, outcome, code, left(sentence,50) from action_audit order by created_at desc limit 20"
+# how often the gates close, and which ones
+docker exec sloth-pg psql -U sloth -d sloth -c \
+  "select outcome, code, count(*) from action_audit where created_at > now() - interval '7 days' group by 1,2 order by 3 desc"
+```
+
+`outcome` is `applied`, `confirm-pending`, `blocked`, or `failed`. **`blocked` is not a failure** —
+it means a gate did its job, and `code` names it (`readonly` for the owner's stop, `entitlement`
+for a lapsed subscription). A `failed` row with `code = unmapped` is a refusal whose gate was never
+named; that is worth looking at, not a normal state.
