@@ -878,6 +878,22 @@ apart — create / update / left in place / blocked — because a single "12
 changes" number hides the difference between adding a channel and being unable
 to read one.
 
+## The appeal plan
+
+`docs/PLAN-ban-appeal.md` in the bot repo (rendered by `scripts/render-plan.py`)
+is the standing plan for this feature: measured facts, the eight defects in order
+of cost, six phases each ending in a number that can fail, and the four questions
+left to the owner. Re-render it after changing the code it describes:
+
+```
+python3 scripts/render-plan.py docs/PLAN-ban-appeal.md /tmp/plan.pdf
+```
+
+Its first finding is a privacy defect, not a nicety: the read gate
+(`guildContext`, `staffInGuild`) is weaker than the decide gate (`moderator` +
+Moderate Members), so the lowest staff rank can read a banned person's complaint
+and download their pictures while being unable to decide anything.
+
 ## The appeal page, for the person who cannot type in the server
 
 Every appeal route before this one lived inside Discord: a quarantined member
