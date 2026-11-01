@@ -1493,3 +1493,46 @@ printf "Subject: operator probe\nFrom: postmaster@slothlee.xyz\nTo: root@slothle
 The null return path fix above is what makes this work end to end: a notification
 carries `MAIL FROM:<>`, which used to be refused at `MAIL FROM` before the
 recipient was even considered.
+
+## The money ledger
+
+Two tables carry what someone bought: `subscriptions` (one row per server or mailbox) and
+`billing_deliveries` (every webhook delivery, unique on provider + delivery id). Everything
+that moves entitlement goes through `src/services/billing/ledger.js` — it writes the row and
+the `guild_settings` dates in one transaction, so the gate (`entitlementFor`, which reads
+`paid_until` / `trial_ends_at`) and the ledger cannot disagree.
+
+**Where the truth is.** `subscriptions`, not the settings columns. The settings dates are the
+derived copy the hot path reads; if the two ever disagree, the row is right and a re-apply is
+safe (it is idempotent per delivery id).
+
+**What the states mean.** `trial`, `active`, `past_due` (the next charge failed — access
+continues), `cancelled` (keeps the period already paid for, then expires), `expired`. A guild
+with no row at all predates billing and is never gated on money.
+
+**Record a payment by hand** while the merchant account is blocked — mark it `manual` so
+nobody later mistakes it for a provider charge:
+
+```
+docker exec -w /app sloth-bot node -e "
+const { applySubscription } = await import('/app/src/services/billing/ledger.js');
+console.log(await applySubscription({
+  scope: 'guild', guildId: '<guild id>', plan: 'bot',
+  state: 'active', periodStart: new Date(), periodEnd: new Date(Date.now() + 30*864e5),
+  provider: 'manual', amountMinor: 700, currency: 'GBP',
+}));
+"
+```
+
+**Prove it still works**, on production, in one command — it signs three deliveries with the
+real secret inside the container, checks applied / duplicate / stale, and deletes what it
+created:
+
+```
+docker cp /root/ledger-drill.mjs sloth-bot:/app/ && docker exec -w /app sloth-bot node /app/ledger-drill.mjs
+```
+
+**Do not quote a "collected" figure from this table.** It holds one period per subscription, so
+a long-lived subscription's later charges are not in it. `billingSnapshot` therefore reports
+`currentPeriodValueMinor` — the value of the periods in force. A real revenue figure needs a
+payments record, which comes with the merchant account.
