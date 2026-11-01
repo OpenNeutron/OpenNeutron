@@ -1541,3 +1541,33 @@ produced, and deletes what it created — the last line must read `0/0/0`.
 a long-lived subscription's later charges are not in it. `billingSnapshot` therefore reports
 `currentPeriodValueMinor` — the value of the periods in force. A real revenue figure needs a
 payments record, which comes with the merchant account.
+
+## The heartbeat
+
+The bot writes one row a minute to `system_health`: due-and-unclaimed jobs, how long the
+oldest has waited, when the newest job finished, how long the query took, the gateway ping,
+and the server count. Rows are pruned to seven days. `/healthz?enriched=1` carries the latest
+beat and its age.
+
+**Why it exists.** `/healthz` says `ok` for a process that is connected and has stopped
+sweeping. The heartbeat is the only signal that distinguishes "nothing to do" from "nothing is
+being done".
+
+**Read it.**
+
+```
+docker exec sloth-pg psql -U sloth -d sloth -c \
+  "select recorded_at, queue_depth, round(oldest_due_ms/60000.0,1) as oldest_due_min, db_lag_ms from system_health order by recorded_at desc limit 5"
+```
+
+**The judgement.** `ok` — nothing due. `waiting` — jobs are due and jobs are finishing; busy
+is not broken. `stalled` — jobs are due, the oldest has waited more than ten minutes, and
+nothing has finished in that time. A beat older than three minutes reports `stopped`, which
+means the writer itself is wedged.
+
+**Known noise.** Every row in `scheduled_jobs` carries `due_at = 1970-01-01` because the
+producers materialise with epoch zero. Harmless while they finish; if one stops, the backlog
+will look fifty-six years old rather than recent. The heartbeat reports what is there, and
+`oldest_due_ms` is BIGINT for exactly that reason — the first live beat could not record
+itself because 1.79e12 ms does not fit a 32-bit column. Nothing is clamped: a clamp would have
+turned a real backlog into a tidy number.
