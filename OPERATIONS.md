@@ -1573,3 +1573,31 @@ will look fifty-six years old rather than recent. The heartbeat reports what is 
 `oldest_due_ms` is BIGINT for exactly that reason — the first live beat could not record
 itself because 1.79e12 ms does not fit a 32-bit column. Nothing is clamped: a clamp would have
 turned a real backlog into a tidy number.
+
+## The business page
+
+`https://owner.slothlee.xyz/business` — behind the owner-console session, same door as the
+credentials. It is the one screen that answers what the business is doing.
+
+**Where the numbers come from.** The bot publishes
+`/opt/sloth-bot/status/business.json` (host path; `/var/lib/sloth-status` in the bot container)
+once a minute, `0600`, uid 1000. The console reads it read-only. The console has no database
+driver and must not get one: the bot's mount of `/opt/sloth-bot` is read-only so credentials
+cannot be rewritten, and a second route into the money path is not worth a single page.
+
+**Reading it honestly.**
+
+- *Period value* is what active subscriptions are paying for the current period. It is **not**
+  money received. Nothing on the page is a received figure, because there is no payments
+  record yet.
+- A plan with no amount is reported as **unknown**, and the note under the number says the
+  value is understated. Do not quote the number without that sentence.
+- *Servers · legacy* should read 10 on the current machine. They are the ten that predate
+  billing and are free for ever, recorded, not implicit.
+- *Stale — the bot has stopped publishing* means the file has not been rewritten in five
+  minutes. That is a bot problem, not a page problem: check `docker ps` and the heartbeat.
+
+**If the page is empty.** `Nothing published yet` means the file is absent or unreadable. Check
+the directory exists on the host (`/opt/sloth-bot/status`, mode 700, uid 1000) and that the bot
+has the `./status:/var/lib/sloth-status` mount — without it the bot logs
+*Business status snapshot could not be written* once a minute and keeps working.
