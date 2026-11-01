@@ -1671,3 +1671,10 @@ node scripts/shot.mjs "https://app.slothlee.xyz/app?guild=<id>&page=logs" /tmp/l
 The cookie is a live credential for its 12 hours: keep it at mode 600, never in a log, a chat or
 a commit, and delete the file when the look is done. `shot.mjs` also prints each `.empty` panel's
 text and every failed request, which is usually faster than reading the screenshot.
+
+### The palette is part of the contract
+
+`dashboard/src/palette-commands.json` is generated from `src/http/action-policy.js` by
+`node dashboard/scripts/generate-commands.mjs`, and every `screen` in it must be a page id in
+`src/nav-config.js`. `check-commands.mjs` enforces both. A screen that is not a page used to
+make the palette's Enter throw inside a key handler: the command did nothing and said nothing.
