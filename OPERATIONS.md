@@ -1678,3 +1678,9 @@ text and every failed request, which is usually faster than reading the screensh
 `node dashboard/scripts/generate-commands.mjs`, and every `screen` in it must be a page id in
 `src/nav-config.js`. `check-commands.mjs` enforces both. A screen that is not a page used to
 make the palette's Enter throw inside a key handler: the command did nothing and said nothing.
+
+### Phone widths to re-measure after a shell change
+
+360, 390, 412 — never 844/932 (those are desktop-shaped phones that hide the problem). The top
+bar's contract: the page name is never truncated, the server chip may ellipsise, the bar stays
+54 px, the document never scrolls sideways.
