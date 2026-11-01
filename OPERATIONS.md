@@ -1026,6 +1026,27 @@ dashboard can answer "who denied this, and did the person hear about it" without
 SQL session — and a row whose `memberTold` is `blocked`/`unavailable` is a member
 whose answer exists only on their own page.
 
+## Filing must not wait for the notices
+
+`POST /appeal/submit` stores the row, stores the evidence, decides the flash —
+and then announces **detached**: `void announceAppeal(...).then(log).catch(log)`.
+Nothing about the member's response depends on a DM landing, and a slow fan-out
+cannot hold a phone.
+
+Two costs are kept off that path:
+
+* the admin list is cached per guild for **two minutes** (`adminCache`,
+  `resetAdminCache()` to clear). discord.js v14 cannot fetch members by role —
+  `GuildMemberManager.fetch` takes `user`/`users`/`limit`/`query`/`withPresences`
+  and nothing else — so finding admins means walking the member list, which is
+  not something to do on every filing.
+* DMs go **five at a time**, so a large staff does not serialise behind one send
+  each, and Discord's DM limits are not what decides who hears.
+
+Measured on the test guild: submit returns `302 → ?flash=sent` in **0.26 s**, and
+`portal appeal announced` with its `sent/blocked/total` counts arrives in the log
+just after.
+
 ## The appeal's audit trail
 
 Five rows, all in `audit_events`, all guild-scoped:
