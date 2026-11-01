@@ -1722,3 +1722,26 @@ ssh -i ~/.ssh/mail_ed25519 root@46.62.155.175 'chown 1000:1000 /opt/sloth-bot/ow
 A bot-only deploy leaves that page silently old: the container stays `Up`, `/healthz` stays 200,
 and the page simply lacks whatever was added. `/opt/sloth-bot/src` is a symlink to `app/src`, so
 `src/` being current says nothing about the console.
+
+### The cancellation question (N5.1)
+
+When a `cancelled` delivery is applied, the owner gets one DM and the answer is stored on the
+subscription row. Three columns explain where it got to:
+
+| column | means |
+|---|---|
+| `cancel_reason` | what they said. Null means nothing has been said — not that they refused |
+| `cancel_reason_asked_at` | the DM left. Written **after** the send, so a closed inbox leaves it null |
+| `cancel_reason_source` | `typed` (the modal) or `choice` (a button) |
+
+```sql
+-- who was asked, who answered, who was never asked
+SELECT guild_id, state, cancel_reason IS NOT NULL AS answered, cancel_reason_source,
+       cancel_reason_asked_at IS NOT NULL AS asked, cancel_reason
+  FROM subscriptions WHERE state = 'cancelled'
+ ORDER BY cancelled_at DESC;
+```
+
+A row with no reason and no `asked_at` is **not** a customer who ignored the question: either it
+predates the question or their DMs are closed. The operator page says so in words; do not "fix"
+that number by writing an asked_at by hand.
