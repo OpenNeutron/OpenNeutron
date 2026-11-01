@@ -1684,3 +1684,41 @@ make the palette's Enter throw inside a key handler: the command did nothing and
 360, 390, 412 — never 844/932 (those are desktop-shaped phones that hide the problem). The top
 bar's contract: the page name is never truncated, the server chip may ellipsise, the bar stays
 54 px, the document never scrolls sideways.
+
+### The first-day number (N2.4)
+
+`/business` carries a section the plan calls *the N2 bar*: five AI answers and one change inside a
+server's own first twenty-four hours.
+
+```sql
+-- one server's first day, by hand
+WITH c AS (SELECT id, joined_at FROM guilds WHERE id = '<guild id>')
+SELECT (SELECT count(*) FROM ai_messages m JOIN ai_conversations v ON v.id = m.conversation_id
+         WHERE v.guild_id = c.id AND m.role = 'assistant'
+           AND m.created_at >= c.joined_at AND m.created_at < c.joined_at + interval '24 hours') AS answers,
+       (SELECT count(*) FROM audit_events e WHERE e.guild_id = c.id
+           AND e.created_at >= c.joined_at AND e.created_at < c.joined_at + interval '24 hours'
+           AND e.action NOT LIKE 'tool.%' AND e.action NOT LIKE 'ai.%'
+           AND e.action NOT IN ('antinuke.trip','automod.hit','url.hit','meaning.review','backup.auto','sticky.skip')
+           AND e.action NOT LIKE '%.cancelled') AS writes
+  FROM c;
+```
+
+A server inside its first day is excluded from the count on purpose — an unfinished day is not a
+failure. The exclusion list lives in `src/services/billing/first-day.js`; if a new *read* action is
+added to the audit trail, add it there or the number will start counting inspections as work.
+
+### Deploying the owner console (it is not in the bot image)
+
+`owner-console` runs `node /opt/sloth-bot/owner-console/server.js` from a **bind mount of the
+host directory**, so building `sloth-bot:local` ships the bot and nothing else. After any change
+under `owner-console/`:
+
+```sh
+scp -i ~/.ssh/mail_ed25519 owner-console/pages.js root@46.62.155.175:/opt/sloth-bot/owner-console/pages.js
+ssh -i ~/.ssh/mail_ed25519 root@46.62.155.175 'chown 1000:1000 /opt/sloth-bot/owner-console/pages.js && docker restart owner-console'
+```
+
+A bot-only deploy leaves that page silently old: the container stays `Up`, `/healthz` stays 200,
+and the page simply lacks whatever was added. `/opt/sloth-bot/src` is a symlink to `app/src`, so
+`src/` being current says nothing about the console.
