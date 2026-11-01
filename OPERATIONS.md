@@ -1011,6 +1011,21 @@ A `-C` in tar applies to the names that follow it, so `-C / sloth-site` asks for
 `/sloth-site` and fails loudly; the first version of this edit did exactly that and
 the run refused to upload rather than shipping a snapshot missing the site.
 
+## Reviewing what was decided
+
+`/api/appeals` is two lists on one route:
+
+```
+/api/appeals                   the queue — status pending, newest first
+/api/appeals?status=decided    the history — accepted/denied, newest decision first
+```
+
+The history carries `decidedBy` and `memberTold` per row, read from the audit
+rows (matched on `payload.appealId`, one query over a 90-day window). So the
+dashboard can answer "who denied this, and did the person hear about it" without a
+SQL session — and a row whose `memberTold` is `blocked`/`unavailable` is a member
+whose answer exists only on their own page.
+
 ## The appeal's audit trail
 
 Five rows, all in `audit_events`, all guild-scoped:
