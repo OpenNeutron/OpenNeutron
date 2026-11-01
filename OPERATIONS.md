@@ -1124,6 +1124,40 @@ before and after, which is the part that proves the channel path is gone. Then
 the appeal rows are deleted, the ban lifted, `0` rows left.
 
 
+## Telling the member what was decided
+
+`src/services/security/appeal-outcome.js`, called from `settleAppeal` — so both
+decision paths (dashboard and the Discord buttons) tell the member exactly once,
+after the lift:
+
+```
+accepted + ban         "the ban in <server> has been lifted"  + how to rejoin
+accepted + quarantine  "you have been released from quarantine"
+denied                 "the decision stands", and that asking again is allowed
+                       (one at a time, two in six hours, never held against them)
+```
+
+Every message names `https://app.slothlee.xyz/appeal`, because a DM is not
+guaranteed and the page is.
+
+**The delivery outcome is recorded, not assumed.** `sendDecisionDm` returns
+`sent` / `blocked` / `unavailable`; `announceDecision` contains a throw as
+`unavailable`; `settleAppeal` writes it into the `appeal.<decision>` audit row as
+`memberTold` and returns it as `told`. `/api/action` carries it on the decision
+response and `/api/appeals?id=` reads it back, so the detail screen can say:
+
+* *the member was told by DM* — `sent`
+* *the member could not be messaged — the answer is on their appeal page* — `blocked` / `unavailable`
+* *no record of the member being told* — `null`, i.e. an appeal decided before this existed
+
+**The limit that cannot be engineered away:** a banned member is not in the
+server, Discord only lets a bot DM a user it shares a guild with, so an accepted
+*ban* appeal's DM usually lands as `blocked` (`50007`) — the ban is lifted and
+they are free to rejoin, but nobody has told them in their inbox. A quarantine
+*release* always delivers, because that member is still in the server. The page is
+the channel that cannot bounce; the dashboard line tells staff which case they are
+in instead of letting them assume the person was reached.
+
 ## Evidence attached to an appeal
 
 A banned member can attach pictures and a clip to their appeal. The feature is
