@@ -1565,8 +1565,10 @@ is not broken. `stalled` — jobs are due, the oldest has waited more than ten m
 nothing has finished in that time. A beat older than three minutes reports `stopped`, which
 means the writer itself is wedged.
 
-**Known noise.** Every row in `scheduled_jobs` carries `due_at = 1970-01-01` because the
-producers materialise with epoch zero. Harmless while they finish; if one stops, the backlog
+**Historical (fixed 1 November).** Rows in `scheduled_jobs` created before 1 November carry
+`due_at = 1970-01-01` because the materialiser wrote epoch zero; anything created after that
+carries its own materialisation time. If you see a 1970 row newer than that, the deploy did not
+take. Harmless while they finish; if one stops, the backlog
 will look fifty-six years old rather than recent. The heartbeat reports what is there, and
 `oldest_due_ms` is BIGINT for exactly that reason — the first live beat could not record
 itself because 1.79e12 ms does not fit a 32-bit column. Nothing is clamped: a clamp would have
