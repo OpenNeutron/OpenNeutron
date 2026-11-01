@@ -1619,3 +1619,20 @@ one button to `<app>/app?page=setup&guild=<id>`. Only on a first join — a re-i
 The message never promises a free tier. If the wording changes, change it in
 `src/services/join-notice.js` and run `node --test test/join-notice.test.js` — the free-tier
 sentence is pinned there on purpose.
+
+## `/setup start` — the three buttons
+
+`/setup start` runs a readiness pass and offers up to three changes, each a button:
+*Log events here*, *Welcome new members here*, and — only when an Ollama key is saved —
+*Let me answer here*. Every fix writes to the channel it was pressed in.
+
+**Reading the result.** A press replies with one line saying what changed, then the refreshed
+list. If the same problem is still listed, the write did not take: check the bot's log for
+`Quick fix applied but not audited` (the settings moved but the audit row failed) or for a
+`That did not save:` sentence in the reply itself.
+
+**In the audit trail** each press is `setup.quickfix.<id>` with the actor and the channel. A
+change with no audit row should not exist; if you find one, that is a bug, not a setting.
+
+**Full detail** stays in `/setup status`, which lists every readiness check including the ones
+no button can fix (Discord permissions, a missing API key).
