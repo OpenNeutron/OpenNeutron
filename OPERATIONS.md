@@ -1601,3 +1601,21 @@ cannot be rewritten, and a second route into the money path is not worth a singl
 the directory exists on the host (`/opt/sloth-bot/status`, mode 700, uid 1000) and that the bot
 has the `./status:/var/lib/sloth-status` mount — without it the bot logs
 *Business status snapshot could not be written* once a minute and keeps working.
+
+## A new server's first minute
+
+When the bot is added to a server it creates the row, then DMs the owner once: three steps and
+one button to `<app>/app?page=setup&guild=<id>`. Only on a first join — a re-invite is silent.
+
+**If an owner says they heard nothing**, the log line to find is
+`{"msg":"Join notice","outcome":"…"}`:
+
+- `sent` — Discord accepted it; look in their request/privacy settings, not here.
+- `blocked` — their DMs are closed to this bot (code `50007`). Nothing to fix on our side.
+- `unavailable` — the bot could not resolve an owner (they left, or the guild was already gone).
+- no line at all — the join event never reached the handler, or the guild row was older than two
+  minutes, which means it is a re-invite and silence is correct.
+
+The message never promises a free tier. If the wording changes, change it in
+`src/services/join-notice.js` and run `node --test test/join-notice.test.js` — the free-tier
+sentence is pinned there on purpose.
