@@ -1636,3 +1636,15 @@ change with no audit row should not exist; if you find one, that is a bug, not a
 
 **Full detail** stays in `/setup status`, which lists every readiness check including the ones
 no button can fix (Discord permissions, a missing API key).
+
+## Empty states
+
+Every empty panel in the dashboard names one next step, from one table
+(`dashboard/src/lib/copy/empty-states.js`): a `note` saying what fills it, and exactly one of
+`run` (a Discord command), `action` (a dashboard page) or `inPlace` (a control on the screen).
+
+`node dashboard/scripts/check-empty-states.mjs` enforces it, and it is part of
+`npm --prefix dashboard run lint`. It fails on a command the bot does not have — that is how
+`/suggest` (never a command here; it is `/suggestion`) was found on the suggestions screen.
+
+If a screen's empty panel names nothing, the gate fails before the deploy, not after.
