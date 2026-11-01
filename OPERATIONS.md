@@ -1528,9 +1528,14 @@ console.log(await applySubscription({
 real secret inside the container, checks applied / duplicate / stale, and deletes what it
 created:
 
+The drill is in the bot repo at `scripts/ledger-drill.mjs`; copy it in and run it:
+
 ```
-docker cp /root/ledger-drill.mjs sloth-bot:/app/ && docker exec -w /app sloth-bot node /app/ledger-drill.mjs
+docker cp scripts/ledger-drill.mjs sloth-bot:/app/ && docker exec -w /app sloth-bot node /app/ledger-drill.mjs
 ```
+
+It reports `applied`, then `duplicate`, then `stale`, then the row and the settings date it
+produced, and deletes what it created — the last line must read `0/0/0`.
 
 **Do not quote a "collected" figure from this table.** It holds one period per subscription, so
 a long-lived subscription's later charges are not in it. `billingSnapshot` therefore reports
