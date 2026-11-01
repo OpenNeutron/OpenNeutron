@@ -1745,3 +1745,35 @@ SELECT guild_id, state, cancel_reason IS NOT NULL AS answered, cancel_reason_sou
 A row with no reason and no `asked_at` is **not** a customer who ignored the question: either it
 predates the question or their DMs are closed. The operator page says so in words; do not "fix"
 that number by writing an asked_at by hand.
+
+### The watchdog (N4.2)
+
+`/usr/local/bin/sloth-health-watch.py`, installed from `ops/sloth-health-watch.py` in the bot repo,
+started by **cron every minute on the host**. It is deliberately outside the bot: a watchdog inside
+the process it watches cannot report that the process is gone.
+
+```sh
+# what it last decided
+cat /var/lib/sloth-alert/state.json
+# what it has said
+tail -20 /var/log/sloth-health-watch.log
+# make it speak now, ignoring the hour's dedupe
+/usr/local/bin/sloth-health-watch.py --test
+```
+
+| verdict | when | what it means |
+|---|---|---|
+| `down` | `/healthz` refused or timed out twice in a row | the bot is not running |
+| `stopped` | heartbeat older than 3 min while `/healthz` answers | up, not sweeping |
+| `lag` | oldest due job > 15 min | work is piling up |
+| `database` | `/healthz` says database is not ok | every write is failing |
+
+One alert per kind per hour. Mail goes through `mail-alert.sh`; the DM goes to the Discord API
+with the token in `/etc/sloth-health-watch.env` (root 0600, copied from the sealed store by the
+bot's loader — that file is the only secret outside `secrets.json`, and it exists so an alert can
+leave while the bot is dead). If that file is missing, mail still works and the log says
+`dm skipped — no DISCORD_TOKEN`.
+
+The owner console's **Send a test alert** button writes a request file into
+`/opt/sloth-bot/alert-requests/`; the watchdog consumes it on its next run. The directory is owned
+`1000:1000` so the console can write it and nothing else can.
