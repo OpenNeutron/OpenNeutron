@@ -72,10 +72,20 @@ recorded `162.158.202.90` (an edge).
   the account has no API token on this host. Unblocking needs one of: an API token
   with `Zone:WAF Edit`, `Zone Settings Edit`, `Zone:Bot Management Edit`, or an
   interactive `cf` re-auth.
-- **`mail` and `owner` have no edge at all** by construction. Their whole shield is
-  nginx + fail2ban, which is effective per address and useless against a distributed
-  attempt — 1 000 addresses × 5 tries each is 5 000 guesses with no ban. For
-  `mail` that is the login form, so **Turnstile on `/api/auth/login`** is the fix
-  worth having, and it is the one thing here that needs the dashboard.
+- **`mail` and `owner` have no edge at all** by construction; nginx + fail2ban is the
+  network shield there. That is per address, so it says nothing about a distributed
+  attempt on one mailbox — but the mail server covers that case itself, which makes the
+  gap narrower than it first looked:
+
+  | Key | Budget | Window | What it stops |
+  | --- | --- | --- | --- |
+  | `user:<name>` | 10 failures | 15 min | grinding **one** mailbox from anywhere |
+  | `ip:<addr>` | 100 failures | 15 min | one host spraying many mailboxes |
+
+  A success clears the key. The table prunes expired entries and is capped, so it is not
+  itself a memory-exhaustion vector. **What it is not**: persistent — a restart forgets
+  the counters, and the lockout is a 15-minute pause, not a lock. Turnstile on
+  `/api/auth/login` would still be the better first line, and it is the one thing here
+  that needs the dashboard.
 - **HSTS preload is declared but never submitted**; `preload` in the header does
   nothing until the domain is on the list.
