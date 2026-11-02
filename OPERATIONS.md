@@ -1936,3 +1936,27 @@ or unreadable (root, 0600) — the log says `dm skipped — no DISCORD_TOKEN`.
 To prove the channel end to end you have to kill something, which is what N4.2's drill did:
 `docker stop sloth-bot`, wait three minutes, watch the alert arrive, then `docker start sloth-bot`
 and confirm `recovered — down cleared`.
+
+### The owner console setup code
+
+It is **emailed to `tibs@slothlee.xyz`**, never printed. On a fresh start (or after a rotation) the
+console writes one copy to `/opt/sloth-bot/owner/setup-code.json` (mode 600, uid 1000) and
+`/usr/local/bin/owner-console-code-mail.sh` — cron, every minute — mails it and deletes the file.
+
+```sh
+# the code went out? (subject and recipient, not the code)
+grep 'to=<tibs@slothlee.xyz>' /var/log/mail.log | tail -3
+cat /var/log/owner-console-code.log | tail -5
+# still queued, i.e. the mail did not send — read it as root, then fix the mail path
+ls -l /opt/sloth-bot/owner/setup-code.json
+
+# rotate: mint a new code and mail it
+rm -f /opt/sloth-bot/owner/auth.json && docker restart owner-console
+```
+
+The console's log says a mail is on its way and where the copy waits. It never contains the code.
+
+**Subjects must be US-ASCII.** A subject with an em dash is refused by the mail server
+(`5.6.7 SMTPUTF8 is required`) while the DM still arrives, so an alert looks delivered when its mail
+bounced. The watchdog folds mail subjects to ASCII; `mail-alert.sh` RFC-2047-encodes anything left.
+If a mail is missing but the DM arrived, suspect the subject first.

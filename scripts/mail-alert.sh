@@ -12,11 +12,29 @@ set -uo pipefail
 
 SUBJECT="${1:-alert from $(hostname)}"
 BODY="$(cat)"
+# Headers must be US-ASCII, or the MTA refuses the message outright:
+#   5.6.7 SMTPUTF8 is required, but was not offered by host 127.0.0.1
+# A subject as ordinary as "Test alert — this is what a real one looks like" bounced exactly like
+# that on 2 November, so the subject is encoded per RFC 2047 and the body declares its charset.
+SUBJECT_ENCODED="$(printf '%s' "$SUBJECT" | python3 -c '
+import sys
+subject = sys.stdin.read()
+try:
+    subject.encode("ascii")
+    sys.stdout.write(subject)
+except UnicodeEncodeError:
+    from email.header import Header
+    sys.stdout.write(Header(subject, "utf-8").encode())
+')"
+
 {
-    printf 'Subject: %s\n' "$SUBJECT"
+    printf 'Subject: %s\n' "$SUBJECT_ENCODED"
     printf 'From: root@slothlee.xyz\n'
     printf 'To: tibs@slothlee.xyz\n'
     printf 'Date: %s\n' "$(date -R)"
+    printf 'MIME-Version: 1.0\n'
+    printf 'Content-Type: text/plain; charset=utf-8\n'
+    printf 'Content-Transfer-Encoding: 8bit\n'
     printf '\n'
     printf 'Host: %s\n\n' "$(hostname)"
     printf '%s\n' "${BODY:-(no output captured)}"
