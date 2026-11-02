@@ -101,3 +101,38 @@ recorded `162.158.202.90` (an edge).
   shows `preload`; through the edge it is gone), so `slothlee.xyz` cannot be submitted
   to the preload list until the zone's HSTS setting has preload enabled. That is one
   toggle on the dashboard, or one API call.
+
+## Transport: the HTTPS leg was post-quantum, the mail leg was not (fixed 2 November 2026)
+
+Measured with `openssl s_client` and `posttls-finger` before changing anything:
+
+- `mail.slothlee.xyz:443` negotiated **X25519MLKEM768** — already hybrid, courtesy of OpenSSL 3.5.
+- `mail.slothlee.xyz:25` offered only the hybrid group → **handshake failure, alert 40**.
+- Outbound to `gmail-smtp-in.l.google.com:25` → `key-exchange **x25519**`, classical.
+
+Cause: Postfix ships `tls_eecdh_auto_curves = X25519 X448 prime256v1 secp384r1 secp521r1`, which
+contains no ML-KEM group, so the server offered hybrid to nobody and declined it from everyone.
+
+Fixed by putting the hybrid group first:
+
+```
+tls_eecdh_auto_curves = X25519MLKEM768 X25519 X448 prime256v1 secp384r1 secp521r1
+```
+
+Verified after the reload, from both directions:
+
+- inbound `:25`, offering only the hybrid group → `Negotiated TLS1.3 group: X25519MLKEM768`
+- inbound `:25`, classical group → still `TLS1.3 / TLS_AES_256_GCM_SHA384`
+- outbound to Google with no overrides → `key-exchange X25519MLKEM768`
+- a real message sent after the change: `mailq` empty, delivered, newest inbox entry present
+
+Classical clients are unaffected: the group list is a preference order, and the old groups are
+still offered. DANE pinning is untouched — it pins the certificate, not the key exchange.
+
+**This is the leg that matters most for harvest-now-decrypt-later.** OpenPGP only protects mail
+where both ends opted in; a hybrid key exchange protects every message the server relays, including
+the overwhelming majority that never uses message-layer encryption at all.
+
+**Also fixed here:** `/etc/aliases` did not exist while `alias_maps = hash:/etc/aliases`, so every
+`smtpd` logged `error: open database /etc/aliases.db: No such file or directory` (first seen
+1 November, so it predated this work). A minimal aliases file plus `newaliases` silenced it.
