@@ -87,5 +87,17 @@ recorded `162.158.202.90` (an edge).
   the counters, and the lockout is a 15-minute pause, not a lock. Turnstile on
   `/api/auth/login` would still be the better first line, and it is the one thing here
   that needs the dashboard.
-- **HSTS preload is declared but never submitted**; `preload` in the header does
-  nothing until the domain is on the list.
+- **HSTS: four hosts were saying four different things, and one said nothing.** As
+  found: `app` sent `preload`, `mail` and the apex did not, and **`owner` sent no HSTS
+  header at all**. The apex's header was not even its own — it came from Cloudflare,
+  which was overwriting the origin's. Now fixed at origin: the shared snippet carries
+  `preload`, `owner` gained HSTS for the first time, and every host that answered port
+  80 with a **404** now answers with **301 → https** while keeping the ACME challenge
+  path reachable so renewals still work. Verified: `http://` on all four hosts → `301`,
+  `https://` on `app`, `owner`, `mail` → `max-age=31536000; includeSubDomains; preload`.
+
+  **The one thing still untrue is the apex.** Its origin now sends `preload`, but
+  Cloudflare *replaces* the header on the way out (`curl --resolve` direct to origin
+  shows `preload`; through the edge it is gone), so `slothlee.xyz` cannot be submitted
+  to the preload list until the zone's HSTS setting has preload enabled. That is one
+  toggle on the dashboard, or one API call.
