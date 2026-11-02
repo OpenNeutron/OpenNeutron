@@ -1815,3 +1815,124 @@ docker exec sloth-pg psql -U sloth -d sloth -c \
 it means a gate did its job, and `code` names it (`readonly` for the owner's stop, `entitlement`
 for a lapsed subscription). A `failed` row with `code = unmapped` is a refusal whose gate was never
 named; that is worth looking at, not a normal state.
+
+## Alerts
+
+The watchdog (`/usr/local/bin/sloth-health-watch.py`, cron every minute on the host) sends exactly
+five kinds of alert. Each one names the page below, and each page carries the exact command that
+proves or denies the verdict — a runbook with a command that errors is worse than no runbook, so
+every command here has been run against the live system.
+
+One alert per kind per hour. Recovery is a log line, not a second message.
+
+### Alert: the bot is not answering
+
+**Kind `down`.** `/healthz` refused or timed out **twice in a row**. One missed minute is a restart;
+two is a bot that is not coming back on its own — at this point nothing is being answered in any
+server, and the bot cannot tell you itself (the DM comes from the watchdog, on the host, outside the
+process).
+
+```sh
+docker ps --filter name=sloth-bot --format '{{.Status}}'
+docker logs sloth-bot --since 15m | tail -60
+docker inspect sloth-bot --format '{{.State.ExitCode}} {{.State.OOMKilled}} {{.State.Error}}'
+```
+
+Read the exit code before restarting: `137` with `OOMKilled=true` is a memory problem and will
+return; `0` is a clean exit, which means something asked it to stop; `1` is a crash, and the log
+above has the stack.
+
+```sh
+cd /opt/sloth-bot && docker compose -f docker-compose.yml --env-file .env up -d bot
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3200/login   # 200 = back
+```
+
+**Over when:** `/healthz` answers and the next watchdog run logs `recovered — down cleared`. The
+watchdog will not re-alert for an hour, so silence after a restart is not proof — read
+`/var/lib/sloth-alert/state.json`.
+
+### Alert: up but not sweeping
+
+**Kind `stopped`.** The process answers, but its own heartbeat has not moved for over three minutes.
+This is the failure this product will actually have: `/healthz` says 200, the dashboard loads, and no
+giveaway ends, no ticket reminder fires, nothing is pruned. It is invisible from outside, which is
+why the beat exists.
+
+```sh
+docker exec sloth-pg psql -U sloth -d sloth -c "select recorded_at, round(extract(epoch from (now()-recorded_at))) as age_s, queue_depth from system_health order by recorded_at desc limit 3"
+```
+
+`age_s` over 180 with a live container is the verdict. `queue_depth` growing while `age_s` grows is a
+stuck claim; `queue_depth` flat and `age_s` growing is the scheduler loop itself.
+
+```sh
+docker logs sloth-bot --since 20m | grep -iE 'scheduler|claim|lease|unhandled|uncaught' | tail -40
+docker exec sloth-pg psql -U sloth -d sloth -c "select kind, state, count(*), min(due_at) from scheduled_jobs where state in ('running','retry_wait') group by 1,2 order by 4 limit 10"
+```
+
+A `running` row whose lease expired is reclaimed automatically on the next sweep — if it is not, the
+sweep is not running, and a restart is the answer:
+
+```sh
+cd /opt/sloth-bot && docker compose -f docker-compose.yml --env-file .env restart bot
+```
+
+**Over when:** a new `system_health` row appears (within a minute) and the log says
+`recovered — stopped cleared`.
+
+### Alert: work is piling up
+
+**Kind `lag`.** The oldest due job is more than fifteen minutes old. Nothing is lost — the queue is
+durable — but giveaways, reminders and sweeps are running late, and late is a product failure even
+when it is not data loss.
+
+```sh
+docker exec sloth-pg psql -U sloth -d sloth -c "select kind, min(due_at) as oldest, count(*) from scheduled_jobs where state in ('scheduled','retry_wait') and due_at <= now() group by kind order by 2 limit 10"
+```
+
+```sh
+docker exec sloth-pg psql -U sloth -d sloth -c "select state, count(*) from scheduled_jobs group by 1 order by 2 desc"
+```
+
+One kind lagging is that kind's executor; every kind lagging is the sweep (treat it as `stopped`). A
+large `scheduled` count with a small queue depth is a backlog catching up, not a stall — watch it for
+two runs before acting.
+
+**Over when:** `oldest` is under fifteen minutes again. No message follows, by design: the next real
+breach is the next alert.
+
+### Alert: the database is not answering
+
+**Kind `database`.** `/healthz` reports `database` not ok. Every write is failing; reads may serve
+stale data. The bot is up, which means this is the pool or Postgres, not the process.
+
+```sh
+docker exec sloth-pg psql -U sloth -d sloth -c 'select 1'
+docker ps --filter name=sloth-pg --format '{{.Status}}'
+docker exec sloth-pg psql -U sloth -d sloth -c "select count(*), max(state) from pg_stat_activity where datname='sloth'"
+```
+
+A full pool (connections at the ceiling) is the usual cause: a long query holding a connection.
+Find it, and only then restart Postgres — a restart drops every in-flight write.
+
+**Over when:** `/healthz` reports `database: ok` and the next run logs
+`recovered — database cleared`.
+
+### Alerting: how to prove the path works
+
+The button on the owner console's business page queues a test request; the watchdog sends it within
+a minute. From the shell:
+
+```sh
+/usr/local/bin/sloth-health-watch.py --test
+tail -5 /var/log/sloth-health-watch.log     # expect "mail sent rc=0" and "dm sent message_id=…"
+cat /var/lib/sloth-alert/state.json         # last_alert tells you what fired, and when
+```
+
+A test alert says **test** in its own text and will not repeat for an hour, so it cannot be confused
+with a real one. If the DM is missing but the mail arrived, `/etc/sloth-health-watch.env` is missing
+or unreadable (root, 0600) — the log says `dm skipped — no DISCORD_TOKEN`.
+
+To prove the channel end to end you have to kill something, which is what N4.2's drill did:
+`docker stop sloth-bot`, wait three minutes, watch the alert arrive, then `docker start sloth-bot`
+and confirm `recovered — down cleared`.
