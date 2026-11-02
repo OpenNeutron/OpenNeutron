@@ -189,3 +189,32 @@ against it — 944 members, `Loaded 14 users`, DKIM key recovered, restored copy
 **Trap found while proving the gate:** GNU tar applies `--exclude` positionally — placed after the
 file arguments it prints *"--exclude has no effect"* and keeps the file. The first injection test
 therefore did nothing and "passed". Exclusions belong before the first member argument.
+
+## Key transparency: a bigger tree is not proof of anything (2 November 2026)
+
+A pinned head caught a log that shrank or changed at the same size. It could not catch the
+interesting attack: rewrite an old key, grow past it, and every client sees a bigger tree that looks
+exactly like normal operation.
+
+**Added** `POST /api/kt/consistency` and RFC 6962 consistency proofs over the key log. The send path
+now asks, on every send where this browser has a pinned head, whether the current tree still contains
+the one it pinned — and refuses when the answer does not check out.
+
+Two things worth recording:
+
+- **The RFC defines the proof, not the check.** The parity walk that looks obvious from §2.1.2 rejects
+  valid proofs at odd sizes and for every power-of-two prefix. The verifier here is a port of the
+  reference implementation (`transparency-dev/merkle`, `proof/verify.go`), validated against the three
+  worked proofs in §2.1.3 and then over **every size pair 1..24** in Rust and against live proofs in
+  JavaScript.
+- **The endpoint returns its own `first_root` for diagnostics.** A client must verify against the root
+  it pinned; a root the server hands over now proves nothing.
+
+**Proved live**, in a real browser with a planted pin at size 3:
+
+- honest root → proof fetched and verified → the message **was delivered** (`10:29:32Z`).
+- same size, one byte changed → refused: *"The key directory could not show that it still contains the
+  history this browser saw (proof_does_not_fit). Nothing was sent."* — and **no delivery** appeared in
+  the log.
+
+131 Rust tests (was 128), 203 web tests, sw `v86`, bundle stamped `346fc69`, mail commit `6745ccd`.
