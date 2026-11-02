@@ -136,3 +136,35 @@ the overwhelming majority that never uses message-layer encryption at all.
 **Also fixed here:** `/etc/aliases` did not exist while `alias_maps = hash:/etc/aliases`, so every
 `smtpd` logged `error: open database /etc/aliases.db: No such file or directory` (first seen
 1 November, so it predated this work). A minimal aliases file plus `newaliases` silenced it.
+
+## Disk: 95% full, and nothing was watching (fixed 2 November 2026)
+
+The host reached **68 GB of 75 GB used, 3.8 GB free**, and no alert fired — the watchdog watched
+the bot, not the disk it lives on.
+
+**The cause was not mail data.** `/opt/on/data` was 27 MB and `/opt/on/target` 2.3 GB, while
+`/var/lib/containerd` held **59 GB**: every `docker build` leaves the previous image untagged, and 73
+of them had accumulated. `docker system df` reported only 646 MB as reclaimable, which is why this
+looked like something else for long enough for the disk to fill.
+
+**What was done**
+
+- `docker image prune -f` (dangling only — nothing a container uses): **17.24 GB reclaimed**,
+  containerd 59 GB → 8 GB, disk 95% → 25%.
+- `/usr/local/bin/sloth-disk-guard.sh`, cron `40 4 * * *`: prunes dangling images older than a day,
+  build cache older than a week, stopped containers older than a day; alerts by mail above 85%.
+- The watchdog now checks the disk **first**, before the bot, because a full disk explains every
+  other symptom. Dedupe is the existing one-per-kind-per-hour.
+- Both thresholds are overridable (`DISK_THRESHOLD`, `SLOTH_DISK_THRESHOLD`) so the alert path can be
+  proved by lowering one instead of filling a disk. Proved: guard `alert sent: [Sloth Lee] disk at
+  23% (56 GB free)`; watchdog `ALERT disk: disk at 26%`, mail rc=0, **DM delivered**
+  (`message_id=1566695709363798127`).
+- `/etc/docker/daemon.json` now caps container logs at 20 MB × 3 (`dockerd --validate` clean, docker
+  restarted, all five containers back `unless-stopped`). **Applies to containers created from now
+  on**, not the running ones.
+
+**Numbers after:** 17 GB used, **56 GB free**, containerd 6.7 GB, mail/app/owner all answering, queue
+empty, and a real message sent through the browser afterwards to prove the stack, not just the ports.
+
+**Left alone deliberately:** `/opt/on/target` (2.3 GB) is what makes a mail rebuild 26 seconds instead
+of ten minutes. Pruning it to save 2.3 GB would cost far more than it saves.
