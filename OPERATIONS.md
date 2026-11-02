@@ -1978,3 +1978,19 @@ rm -f /opt/sloth-bot/owner/auth.json && docker restart owner-console
 # a fresh code is queued and mailed within a minute; watch it:
 tail -3 /var/log/owner-console-code.log
 ```
+
+### The restore drill, and why it must mint its own token
+
+`/usr/local/bin/mail-restore-drill.sh` runs monthly (1st, 06:00): it downloads the latest off-site
+archive, checks its sha256 against the upload log, decrypts it, extracts it, boots it on port 8099,
+and then asks the restored server who exists.
+
+The last check used to read `/root/.admin.jwt` — a 24-hour token a human had left on the host. It
+expired on 31 October and every drill after that reported **"the restored copy holds no accounts"**
+while the same archive loaded its user table two checks earlier. The drill was measuring the age of a
+file, not the backup.
+
+It now mints a two-minute token from the **restored** `config.yml` (`jwt.secret`), and requires the
+API's count to equal the number the restored table loaded — two sources agreeing, or a failure that
+names both numbers. If it cannot mint, it fails and says the count went unchecked; it does not skip
+quietly.
