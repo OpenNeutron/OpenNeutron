@@ -1960,3 +1960,21 @@ The console's log says a mail is on its way and where the copy waits. It never c
 (`5.6.7 SMTPUTF8 is required`) while the DM still arrives, so an alert looks delivered when its mail
 bounced. The watchdog folds mail subjects to ASCII; `mail-alert.sh` RFC-2047-encodes anything left.
 If a mail is missing but the DM arrived, suspect the subject first.
+
+### Rotating the setup code from the console
+
+Signed in at `https://owner.slothlee.xyz/`, the credentials page has a **Setup code** section: type
+`tibs@slothlee.xyz` into the field and the *Generate a new code and email it* button appears. Press
+it and a new code is mailed within a minute; the previous code stops working at once and you stay
+signed in. One rotation per minute — a second press inside thirty seconds is refused with a note.
+
+The address check is enforced on the server, not only by hiding the button.
+
+**Locked out?** The button needs a session, and the address is public, so it is deliberately not on
+the login page. From the host:
+
+```sh
+rm -f /opt/sloth-bot/owner/auth.json && docker restart owner-console
+# a fresh code is queued and mailed within a minute; watch it:
+tail -3 /var/log/owner-console-code.log
+```
