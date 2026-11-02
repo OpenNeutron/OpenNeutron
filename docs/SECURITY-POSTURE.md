@@ -168,3 +168,24 @@ empty, and a real message sent through the browser afterwards to prove the stack
 
 **Left alone deliberately:** `/opt/on/target` (2.3 GB) is what makes a mail rebuild 26 seconds instead
 of ten minutes. Pruning it to save 2.3 GB would cost far more than it saves.
+
+## The backup was quietly missing two sidecars (fixed 2 November 2026)
+
+`mail-offsite-backup.sh` carried a hand-written list of `data/*.json`. Two had drifted out of it:
+`sendcount.json` (per-sender rate counters) and `signup_ips.json` (signup abuse tracking). A restore
+would have quietly reset both — an abuser's quota would come back clean, and a restore is exactly the
+moment nobody is looking at rate limits.
+
+**The fix is structural, not a longer list:** the script now builds its member list from
+`ls data/*.json` at run time, logs how many it took, and after round-tripping the archive it checks
+**every** sidecar on disk is a member — refusing to upload if one is missing.
+
+Proved by re-injecting the bug: a test copy excluding one sidecar exited `rc=1` with
+`ERROR archive is missing sidecars: data/zz-gate-test.json` and uploaded nothing.
+
+A fresh archive followed: **22 sidecars, 29,437,706 bytes**, uploaded, and the restore drill passes
+against it — 944 members, `Loaded 14 users`, DKIM key recovered, restored copy answers its API.
+
+**Trap found while proving the gate:** GNU tar applies `--exclude` positionally — placed after the
+file arguments it prints *"--exclude has no effect"* and keeps the file. The first injection test
+therefore did nothing and "passed". Exclusions belong before the first member argument.
