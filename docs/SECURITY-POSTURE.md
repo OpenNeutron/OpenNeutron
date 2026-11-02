@@ -218,3 +218,21 @@ Two things worth recording:
   the log.
 
 131 Rust tests (was 128), 203 web tests, sw `v86`, bundle stamped `346fc69`, mail commit `6745ccd`.
+
+## Monitoring the app itself, not just its sockets (2 November 2026)
+
+Containers running, `/healthz` green, mail flowing, ports answering 200 — and the app can still serve
+a blank screen, because none of those checks render it. That is exactly the failure that once took
+the signed-in screens down for six minutes and was caught by a person rather than a monitor.
+
+`sloth-app-probe` (Hermes cron, every 30 minutes, `no_agent`, quiet on success) loads `/login`,
+requires a real form, signs in as a QA account, requires the mailbox shell to render with **no page
+errors**, then signs out. On failure it mails with a runbook path and one first command; every run
+writes one line to `/opt/data/logs/sloth-app-probe.log`.
+
+Proved both directions: silent success, and a forced wrong password producing
+`APP PROBE FAILED: sign-in did not reach the mailbox` plus a delivered alert at 10:51:37Z.
+
+**Caveat, stated plainly:** the probe runs on the Hermes host, so if *that* host dies the probe stops
+silently. Its absence is not itself monitored; the on-box stack watch and the mail watchdog still run
+on the mail server.
