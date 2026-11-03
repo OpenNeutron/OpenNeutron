@@ -261,3 +261,31 @@ limit is still allowed.
 existed) is treated as aged out rather than immortal. In practice the sweep reaches a session
 before a request does, so the `validate()` refusal is the backstop rather than the everyday path.
 
+## The probe is monitored from outside itself
+
+The app probe is the only check that renders the app like a person, and it runs on the Hermes
+host on a 30-minute cron — which means its own death is silent. "The probe has not run for six
+hours" and "the probe ran and everything was fine" look identical from the mail host, and a
+probe that dies takes its only witness with it.
+
+So the probe now stamps `/opt/sloth-bot/status/app-probe.heartbeat` on the mail host after
+every run (`<epoch> <exit code>`), on failure as well as success — the heartbeat answers *did
+it run*, not *was the app well*; a failed run has its own alert. The mail host's watchdog reads
+it and mails when it is older than **90 minutes** (three missed runs,
+`SLOTH_PROBE_STALE_MINUTES` to override), with a runbook page and one first command that runs
+on the host: `cat /opt/sloth-bot/status/app-probe.heartbeat; date -u +%s`.
+
+**Both branches proved by lowering the threshold, not by breaking the probe:**
+
+- stale — `SLOTH_PROBE_STALE_MINUTES=0` → `ALERT app-probe: the app probe has been silent for
+  0 minutes`, mail `rc=0`, DM `message_id=1566988175895699517`;
+- never reported — heartbeat moved aside → `ALERT app-probe: the app probe has never reported`,
+  mail `rc=0`, DM `message_id=1566988248826249218`.
+
+With the real threshold and a fresh heartbeat the watchdog stays quiet, which is the third
+thing worth checking: an alert that fires when it should not trains people to ignore it.
+
+The alerting scripts now live in this repository (`scripts/sloth-health-watch.py`,
+`scripts/sloth-disk-guard.sh`) as well as in `/usr/local/bin`, because logic that only exists on
+one machine cannot be reviewed or restored.
+
