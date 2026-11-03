@@ -236,3 +236,28 @@ Proved both directions: silent success, and a forced wrong password producing
 **Caveat, stated plainly:** the probe runs on the Hermes host, so if *that* host dies the probe stops
 silently. Its absence is not itself monitored; the on-box stack watch and the mail watchdog still run
 on the mail server.
+
+## Sessions expire
+
+`data/sessions.json` used to grow forever: nothing removed a record except the owner signing
+out, so 452 sessions had accumulated and a cookie copied off a phone stayed valid for as long
+as the account avoided signing out. Two limits now apply (`src/core/sessions.rs`):
+
+- **absolute**: 30 days from `created_at`, regardless of use;
+- **idle**: 14 days since `last_seen_at`.
+
+Both are checked in `validate()` — an aged session is refused *and* its record dropped — and the
+registry is swept by the same minute-ticker that clears ephemeral notes and held mail, so the
+file shrinks without waiting for the account to return.
+
+**Proved in production, not just in tests:** three records were planted (40 days old, 20 days
+idle, and a fresh control), the message was restarted, and the log read
+`sessions: dropped 2 aged-out session(s)`, with the two stale records gone, the control intact,
+and the count falling 455 → 453. A real sign-in afterwards still rendered the mailbox
+(app probe, 01:29:36Z). Five unit tests cover the boundaries — a session one second inside each
+limit is still allowed.
+
+**Known limit:** a record with no timestamps (`created_at == 0`, written before those fields
+existed) is treated as aged out rather than immortal. In practice the sweep reaches a session
+before a request does, so the `validate()` refusal is the backstop rather than the everyday path.
+
