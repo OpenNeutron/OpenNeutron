@@ -118,6 +118,7 @@ fn main() -> Result<()> {
         let sweeper_mail = Arc::clone(&email_storage);
         thread::spawn(move || loop {
             crate::core::ephemeral::sweep(&sweeper_users, &sweeper_mail);
+            crate::core::trash::sweep(&sweeper_users, &sweeper_mail);
             crate::core::notes::sweep();
             crate::core::arrival::sweep_old(crate::core::arrival::now());
             thread::sleep(std::time::Duration::from_secs(60));
@@ -531,6 +532,10 @@ fn run_server(user_storage: Arc<UserStorage>, email_storage: Arc<EmailStorage>, 
     router.add_route(Method::Post,      "/api/email/sent/get",        Authenticated,  endpoints::email::get_sent_email);
     router.add_route(Method::Post,      "/api/email/sent/bulk",       Authenticated,  endpoints::email::get_sent_emails_bulk);
     router.add_route(Method::Post,      "/api/email/sent/delete",     Authenticated,  endpoints::email::delete_sent_email);
+    router.add_route(Method::Post,      "/api/email/trash",           Authenticated,  endpoints::trash::trash_email);
+    router.add_route(Method::Post,      "/api/email/restore",         Authenticated,  endpoints::trash::restore_email);
+    router.add_route(Method::Post,      "/api/email/trash/list",      Authenticated,  endpoints::trash::list_trash);
+    router.add_route(Method::Post,      "/api/email/trash/empty",     Authenticated,  endpoints::trash::empty_trash);
 
     router.add_route(Method::Get,       "/api/group/list",            Authenticated,  endpoints::group::list_groups);
     router.add_route(Method::Post,      "/api/group/create",          Authenticated,  endpoints::group::create_group);

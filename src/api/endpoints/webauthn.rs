@@ -414,7 +414,7 @@ pub fn login_finish(
         use base64::{engine::general_purpose::STANDARD, Engine as _};
         STANDARD.encode(&pk.0)
     });
-    let unread = email_storage.count_unread(&user.emailIds);
+    let unread = email_storage.count_unread(&crate::core::trash::inbox_ids(&user));
 
     log::info!("[WebAuthn] '{}' signed in with security key '{}'", username, key.name);
     ok_json(serde_json::to_value(LoginResponse {

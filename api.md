@@ -440,6 +440,32 @@ a separate message and is not touched. Recorded in the deletion log like an inbo
 }
 ```
 
+#### POST /email/trash
+Moves one of the caller's messages (received or sent) to the trash. It leaves its folder's list
+endpoints but stays readable through `/email/get`, `/email/bulk` and the sent equivalents.
+Deleted for good after 30 days. Not recorded in the deletion log until it is deleted for good.
+
+**Request**: `{ "uid": "..." }` · **Response**: `{ "message": "Moved to trash", "uid": ..., "kind": "inbox" | "sent" }`
+(`404 email_not_found` when the uid is not the caller's)
+
+#### POST /email/restore
+Takes a message out of the trash, back to the folder it came from.
+
+**Request**: `{ "uid": "..." }` · **Response**: `MessageResponse` (`404 not_in_trash` when it is not there)
+
+#### POST /email/trash/list
+The caller's trash, newest first. Records whose message is already gone are left out.
+
+**Response**: `{ "items": [{ "uid": ..., "kind": "inbox", "trashed_at": 1793..., "deletes_at": 1796... }], "retention_days": 30 }`
+
+#### POST /email/trash/empty
+Deletes everything in the caller's trash for good (blob, lists, groups, then a `deleted` entry in the
+deletion log for each).
+
+**Response**: `{ "deleted": 3, "failed": 0 }`
+
+Permanent deletes (`/email/delete`, `/email/sent/delete`) also clear a message's trash record.
+
 #### POST /email/set
 **Request**: 'SetEmailBytesRequest'
 ```json

@@ -204,7 +204,9 @@ pub fn list_email_uids(
         }
     };
 
-    let resp = EmailUidsResponse { uids: user.emailIds.clone() };
+    // Trashed messages stay indexed (so the Trash view can read them) but leave the folder.
+    let trashed = crate::core::trash::trashed_uids(&user.username);
+    let resp = EmailUidsResponse { uids: user.emailIds.iter().copied().filter(|id| !trashed.contains(id)).collect() };
     let body = serde_json::to_vec(&resp).unwrap();
     Response::from_data(body).with_status_code(200).with_header(json_header())
 }
@@ -247,6 +249,7 @@ pub fn delete_email(
         let err = serde_json::to_vec(&ErrorResponse { error: "Failed to delete email".into(), code: "delete_failed".into() }).unwrap();
         return Response::from_data(err).with_status_code(500).with_header(json_header());
     }
+    let _ = crate::core::trash::remove(&user.username, req.uid);
     // Written only after the blob is gone: a log entry for a message that is
     // still there would be worse than no entry at all.
     if let Err(e) = crate::core::mailboxlog::append(&user.username, "deleted", &req.uid.to_string()) {
@@ -295,6 +298,7 @@ pub fn delete_sent_email(
         let err = serde_json::to_vec(&ErrorResponse { error: "Failed to delete email".into(), code: "delete_failed".into() }).unwrap();
         return Response::from_data(err).with_status_code(500).with_header(json_header());
     }
+    let _ = crate::core::trash::remove(&user.username, req.uid);
     // Same signed log as the inbox: written only after the blob is gone.
     if let Err(e) = crate::core::mailboxlog::append(&user.username, "deleted", &req.uid.to_string()) {
         log::warn!("[Log] Could not record deletion of sent copy {}: {}", req.uid, e);
@@ -388,7 +392,9 @@ pub fn list_recent_email_uids(
     };
 
     
+    let trashed = crate::core::trash::trashed_uids(&user.username);
     let uids: Vec<u128> = user.emailIds.iter().rev()
+        .filter(|id| !trashed.contains(id))
         .skip(req.offset)
         .take(req.limit)
         .copied()
@@ -1332,7 +1338,8 @@ pub fn list_sent_email_uids(
         }
     };
 
-    let resp = EmailUidsResponse { uids: user.sent_emails.clone() };
+    let trashed = crate::core::trash::trashed_uids(&user.username);
+    let resp = EmailUidsResponse { uids: user.sent_emails.iter().copied().filter(|id| !trashed.contains(id)).collect() };
     let body = serde_json::to_vec(&resp).unwrap();
     Response::from_data(body).with_status_code(200).with_header(json_header())
 }
@@ -1357,7 +1364,9 @@ pub fn list_recent_sent_email_uids(
         Err(resp) => return resp,
     };
 
+    let trashed = crate::core::trash::trashed_uids(&user.username);
     let uids: Vec<u128> = user.sent_emails.iter().rev()
+        .filter(|id| !trashed.contains(id))
         .skip(req.offset)
         .take(req.limit)
         .copied()
