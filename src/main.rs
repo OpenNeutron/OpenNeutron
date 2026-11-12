@@ -530,6 +530,7 @@ fn run_server(user_storage: Arc<UserStorage>, email_storage: Arc<EmailStorage>, 
     router.add_route(Method::Post,      "/api/email/sent/recent",     Authenticated,  endpoints::email::list_recent_sent_email_uids);
     router.add_route(Method::Post,      "/api/email/sent/get",        Authenticated,  endpoints::email::get_sent_email);
     router.add_route(Method::Post,      "/api/email/sent/bulk",       Authenticated,  endpoints::email::get_sent_emails_bulk);
+    router.add_route(Method::Post,      "/api/email/sent/delete",     Authenticated,  endpoints::email::delete_sent_email);
 
     router.add_route(Method::Get,       "/api/group/list",            Authenticated,  endpoints::group::list_groups);
     router.add_route(Method::Post,      "/api/group/create",          Authenticated,  endpoints::group::create_group);

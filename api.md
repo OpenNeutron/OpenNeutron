@@ -423,6 +423,23 @@ recipient sync runs, would be a valid recipient.
 }
 ```
 
+#### POST /email/sent/delete
+Deletes one of the caller's own sent copies (a uid from `/email/sent/list`). The recipient's copy is
+a separate message and is not touched. Recorded in the deletion log like an inbox delete.
+
+**Request**: 'DeleteEmailRequest'
+```json
+{
+  "uid": 12345678901234567890
+}
+```
+**Response**: 'MessageResponse' (`404 email_not_found` when the uid is not one of the caller's sent copies)
+```json
+{
+  "message": "Email deleted"
+}
+```
+
 #### POST /email/set
 **Request**: 'SetEmailBytesRequest'
 ```json
