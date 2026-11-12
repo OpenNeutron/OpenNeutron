@@ -412,7 +412,11 @@ pub struct DeleteGroupRequest {
 
 #[derive(Deserialize)]
 pub struct GroupEmailRequest {
+    // Quoted or bare, like every other id: a client that quotes ids (it must, past 2^53) was
+    // refused here as invalid JSON.
+    #[serde(deserialize_with = "crate::api::u128_flex::uid")]
     pub group_uid: u128,
+    #[serde(deserialize_with = "crate::api::u128_flex::uid")]
     pub email_uid: u128,
 }
 
