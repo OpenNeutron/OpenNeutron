@@ -371,7 +371,10 @@ fn handle_smtp_connection(
                             }
                         });
 
-                        user_storage.add_email_to_matching_groups(username, email.uid, &received.from);
+                        // Rules match the envelope sender or the From header, whichever the
+                        // person wrote the rule for.
+                        let header_from = received.headers.get("from").map(String::as_str).unwrap_or("");
+                        user_storage.file_by_senders(username, email.uid, &[received.from.as_str(), header_from]);
 
                         // Remember the door it came through, so a reply can go back
                         // out from the same address rather than the owner's real one.
