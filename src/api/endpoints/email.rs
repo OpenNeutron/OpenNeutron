@@ -257,6 +257,53 @@ pub fn delete_email(
     Response::from_data(msg).with_status_code(200).with_header(json_header())
 }
 
+/// POST /email/sent/delete - delete one of the caller's own sent copies.
+///
+/// The inbox delete only ever looked in `emailIds`, so a message deleted from the Sent folder
+/// answered 404 and stayed. A sent copy is the sender's own blob (the recipient's copy is a
+/// different blob with its own uid), so deleting it touches nobody else's mail.
+pub fn delete_sent_email(
+    request: &mut Request,
+    user: Option<User>,
+    user_storage: Arc<UserStorage>,
+    email_storage: Arc<EmailStorage>,
+) -> Response<Cursor<Vec<u8>>> {
+    let user = match user {
+        Some(u) => u,
+        None => {
+            let err = serde_json::to_vec(&ErrorResponse { error: "Unauthorized".into(), code: "unauthorized".into() }).unwrap();
+            return Response::from_data(err).with_status_code(401).with_header(json_header());
+        }
+    };
+
+    let req: DeleteEmailRequest = match read_json_body(request) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+
+    if !user.sent_emails.contains(&req.uid) {
+        let err = serde_json::to_vec(&ErrorResponse { error: "Email not found".into(), code: "email_not_found".into() }).unwrap();
+        return Response::from_data(err).with_status_code(404).with_header(json_header());
+    }
+
+    user_storage.mutate_user(&user.username, |u| u.sent_emails.retain(|&id| id != req.uid));
+    if let Err(e) = user_storage.save_to_file() {
+        log::warn!("[API] Failed to persist user storage after sent delete: {}", e);
+    }
+
+    if let Err(_) = email_storage.delete_email(req.uid) {
+        let err = serde_json::to_vec(&ErrorResponse { error: "Failed to delete email".into(), code: "delete_failed".into() }).unwrap();
+        return Response::from_data(err).with_status_code(500).with_header(json_header());
+    }
+    // Same signed log as the inbox: written only after the blob is gone.
+    if let Err(e) = crate::core::mailboxlog::append(&user.username, "deleted", &req.uid.to_string()) {
+        log::warn!("[Log] Could not record deletion of sent copy {}: {}", req.uid, e);
+    }
+
+    let msg = serde_json::to_vec(&MessageResponse { message: "Email deleted".into() }).unwrap();
+    Response::from_data(msg).with_status_code(200).with_header(json_header())
+}
+
 pub fn set_email_bytes(
     request: &mut Request,
     user: Option<User>,
