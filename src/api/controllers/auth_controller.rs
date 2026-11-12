@@ -117,7 +117,7 @@ pub fn authenticate_with_client(
     crate::core::sessions::record(&session_id, username, &token, user_agent, ip, issued);
     let force_reset = user.needs_force_reset();
     let public_key = user.publicKey.as_ref().map(|pk| STANDARD.encode(&pk.0));
-    let unread_emails = email_storage.count_unread(&user.emailIds);
+    let unread_emails = email_storage.count_unread(&crate::core::trash::inbox_ids(&user));
 
     // Touch only the fields this path owns. Replacing the whole record would
     // overwrite email ids added by a concurrent delivery with the stale clone.

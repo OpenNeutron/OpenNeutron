@@ -8,6 +8,7 @@ pub mod aliases;
 pub mod push;
 pub mod scheduled;
 pub mod email;
+pub mod trash;
 pub mod group;
 pub mod waitlist;
 pub mod pgp;
