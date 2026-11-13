@@ -41,7 +41,20 @@ impl Email {
         // Server-side at-rest encryption using split hybrid RSA-OAEP + AES-256-GCM.
         // message_key stores the RSA-encrypted AES key; raw_data stores the AES ciphertext.
         let (message_key, encrypted_data, is_secure) = if let Some(pk) = &user.publicKey {
-            match cryptography::encrypt_split(pk, &raw_bytes) {
+            // Hybrid when the account has a post-quantum key: breaking RSA alone
+            // must not open stored mail. Falls back to RSA-only for accounts
+            // that have not enabled it yet, which is why old and new mail can
+            // sit in the same mailbox without a migration.
+            let hybrid = crate::core::pqkeys::get(&user.username);
+            let split = match hybrid {
+                Some(keys) => crate::core::pqkeys::encrypt_hybrid(pk, &keys.public_key, &raw_bytes, &user.username)
+                    .or_else(|e| {
+                        log::warn!("[pq] hybrid wrap failed for '{}': {} — falling back to RSA", user.username, e);
+                        cryptography::encrypt_split(pk, &raw_bytes).map_err(|e| e)
+                    }),
+                None => cryptography::encrypt_split(pk, &raw_bytes),
+            };
+            match split {
                 Ok((k, d)) => (Some(k), d, true),
                 Err(e) => {
                     eprintln!("[Email] Encryption failed for user '{}': {} - storing plaintext", user.username, e);
@@ -147,6 +160,23 @@ impl EmailStorage {
     pub fn emailExists(&self, email_uid: u128) -> bool {
         let email_path = format!("{}/{}.bin", self.storageDir, email_uid);
         return Path::new(&email_path).exists();
+    }
+
+    /// Every uid for which a blob exists on disk, derived from the filenames.
+    pub fn list_all_uids(&self) -> Vec<u128> {
+        let mut out = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&self.storageDir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if let Some(stem) = name.strip_suffix(".bin") {
+                    if let Ok(uid) = stem.parse::<u128>() {
+                        out.push(uid);
+                    }
+                }
+            }
+        }
+        out
     }
 
     pub fn read_email(&self, email_uid: u128) -> Result<Email> {

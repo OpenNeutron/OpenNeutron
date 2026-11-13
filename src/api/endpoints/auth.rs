@@ -19,9 +19,16 @@ pub fn login(
     user_storage: Arc<UserStorage>,
     _email_storage: Arc<EmailStorage>,
 ) -> Response<Cursor<Vec<u8>>> {
+    // nginx sits in front of the API, so remote_addr is always the docker
+    // bridge. The header it sets is the only useful address — and it is only
+    // trusted because the API cannot be reached except through nginx.
     let client_ip = request
-        .remote_addr()
-        .map(|addr| addr.ip().to_string())
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv("X-Real-IP"))
+        .map(|h| h.value.to_string())
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| request.remote_addr().map(|addr| addr.ip().to_string()))
         .unwrap_or_else(|| "unknown".to_string());
 
     let login_req: LoginRequest = match read_json_body(request) {
@@ -46,7 +53,21 @@ pub fn login(
         );
     }
 
-    match auth_controller::authenticate(&username, &login_req.password, &user_storage, &_email_storage) {
+    let user_agent = request
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv("User-Agent"))
+        .map(|h| h.value.to_string())
+        .unwrap_or_default();
+
+    match auth_controller::authenticate_with_client(
+        &username,
+        &login_req.password,
+        &user_storage,
+        &_email_storage,
+        &user_agent,
+        &client_ip,
+    ) {
         Ok(result) => {
             ratelimit::record_success(&user_key);
             ratelimit::record_success(&ip_key);
@@ -59,6 +80,23 @@ pub fn login(
                 unread_emails: result.unread_emails,
                 salt: result.salt,
                 encrypted_private_key: result.encrypted_private_key,
+                two_factor_required: result.two_factor_required,
+                challenge: result.challenge,
+                session_id: result.session_id,
+                two_factor_methods: {
+                    // Only the factors this account can actually satisfy: offering a
+                    // button that cannot work is how people conclude the key is broken.
+                    let mut methods = Vec::new();
+                    if result.two_factor_required {
+                        if crate::core::twofactor::is_enabled(&username) {
+                            methods.push("totp".to_string());
+                        }
+                        if crate::core::webauthn::has_any(&username) {
+                            methods.push("webauthn".to_string());
+                        }
+                    }
+                    methods
+                },
             }).unwrap();
             Response::from_data(body).with_status_code(200).with_header(json_header())
         }

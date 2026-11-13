@@ -89,6 +89,30 @@ impl Router {
             })?;
 
         let user = self.user_storage.get_user(&claims.sub)?;
+
+        // Revocation check: a token whose session was signed out, or that was
+        // issued before a "sign out everywhere", must not act.
+        let raw_token = request
+            .headers()
+            .iter()
+            .find(|h| h.field.equiv("Authorization"))
+            .map(|h| h.value.to_string().trim_start_matches("Bearer ").trim().to_string())
+            .unwrap_or_default();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        if !crate::core::sessions::validate(
+            &claims.sub,
+            claims.sid.as_deref(),
+            claims.iat as u64,
+            &raw_token,
+            now,
+        ) {
+            log::info!("[API] Token for '{}' belongs to a revoked session", claims.sub);
+            return None;
+        }
+
         if (claims.iat as u64) < user.credentials_changed_at {
             log::info!(
                 "[API] Rejected token for '{}' issued before an administrative credential reset",
@@ -190,7 +214,9 @@ impl Router {
                     let response = Response::from_data(bytes)
                         .with_status_code(200)
                         .with_header(content_type);
-                    let _ = request.respond(with_static_security_headers(response));
+                    // Security headers live in one place: nginx. Setting them here
+                    // too sent every one of them twice.
+                    let _ = request.respond(response);
                     return;
                 }
                 Err(_) => {
@@ -260,21 +286,6 @@ fn percent_decode(input: &str) -> String {
         i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
-}
-
-/// Static assets are same-origin only and must never be framed or MIME-sniffed.
-fn with_static_security_headers(mut response: Response<Cursor<Vec<u8>>>) -> Response<Cursor<Vec<u8>>> {
-    let headers = [
-        ("X-Content-Type-Options", "nosniff"),
-        ("X-Frame-Options", "DENY"),
-        ("Referrer-Policy", "no-referrer"),
-    ];
-    for (name, value) in headers {
-        if let Ok(header) = Header::from_bytes(name.as_bytes(), value.as_bytes()) {
-            response = response.with_header(header);
-        }
-    }
-    response
 }
 
 fn mime_type(path: &Path) -> &'static str {

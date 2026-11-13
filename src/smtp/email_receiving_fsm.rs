@@ -37,7 +37,12 @@ enum EmailReceivingState {
 pub struct EmailReceivingFSM {
     state: EmailReceivingState,
     email: ReceivedEmail,
+    /// The mail domain this server is authoritative for; used to decide whether a
+    /// recipient is local.
     server_name: String,
+    /// The name announced in the EHLO response, which must match the reverse DNS
+    /// record rather than the bare mail domain.
+    ehlo_name: String,
     user_storage: Arc<UserStorage>,
     is_e2ee: bool,
     /// True once the connection has been upgraded to TLS via STARTTLS.
@@ -47,11 +52,12 @@ pub struct EmailReceivingFSM {
 
 
 impl EmailReceivingFSM {
-    pub fn new(server_name: &str, user_storage: Arc<UserStorage>, remote: String) -> Self {
+    pub fn new(server_name: &str, ehlo_name: &str, user_storage: Arc<UserStorage>, remote: String) -> Self {
         EmailReceivingFSM {
             state: EmailReceivingState::WaitingForEhlo,
             email: ReceivedEmail::new(),
             server_name: server_name.to_string(),
+            ehlo_name: ehlo_name.to_string(),
             user_storage,
             is_e2ee: false,
             is_tls: false,
@@ -282,7 +288,7 @@ impl EmailReceivingFSM {
                         log::debug!("[SMTP {}] {}", self.remote, line_str.trim());
                         self.state = EmailReceivingState::WaitingForMailFrom;
                         let mut response = String::new();
-                        response.push_str(&format!("250-{}\r\n", self.server_name));
+                        response.push_str(&format!("250-{}\r\n", self.ehlo_name));
                         response.push_str("250-PIPELINING\r\n");
                         response.push_str("250-SIZE 104857600\r\n");
                         // Do not advertise STARTTLS on an already-encrypted connection (RFC 3207).

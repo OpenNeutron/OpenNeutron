@@ -11,6 +11,8 @@ use crate::api::dto::{
     SendEmailRequest, MarkEmailReadRequest, SetEmailStarredRequest, ErrorResponse, MessageResponse, json_header,
     GetPublicKeysRequest, GetPublicKeysResponse, RecipientPublicKey,
     SendEncryptedRequest, SendEncryptedResponse, DeliveryResult,
+    EmailFlagResponse, EmailFlagsResponse,
+    EphemeralStatusItem, EphemeralStatusRequest, EphemeralStatusResponse,
 };
 use crate::smtp::EmailSendingFSM;
 use crate::utils::emailutils;
@@ -21,10 +23,29 @@ use crate::api::request::read_json_body;
 /// out into an unbounded number of outbound SMTP connections.
 const MAX_RECIPIENTS: usize = 100;
 
+/// Build the response for ordinary mail. Ephemeral fields are filled in by the
+/// handlers that know about a deleting message.
+fn plain_response(email: &Email) -> EmailBytesResponse {
+    EmailBytesResponse {
+        uid: email.uid,
+        read: email.read,
+        starred: email.starred,
+        data: STANDARD.encode(&email.raw_data),
+        message_key: email.message_key.as_ref().map(|k| STANDARD.encode(k)),
+        received_at: unix_to_iso(email.timestamp),
+        e2ee: email.e2ee,
+        ephemeral: None,
+        expires_at: None,
+        deleted: false,
+        from: Some(email.from.clone()),
+        alias: crate::core::arrival::get(email.uid),
+    }
+}
+
 pub fn get_email(
     request: &mut Request,
     user: Option<User>,
-    _user_storage: Arc<UserStorage>,
+    user_storage: Arc<UserStorage>,
     email_storage: Arc<EmailStorage>,
 ) -> Response<Cursor<Vec<u8>>> {
     let user = match user {
@@ -47,17 +68,42 @@ pub fn get_email(
 
     match email_storage.read_email(req.uid) {
         Ok(email) => {
-            let resp = EmailBytesResponse {
-                uid: email.uid,
-                data: STANDARD.encode(&email.raw_data),
-                message_key: email.message_key.as_ref().map(|k| STANDARD.encode(k)),
-                received_at: unix_to_iso(email.timestamp),
-                e2ee: email.e2ee,
-            };
+            let mut resp = plain_response(&email);
+
+            // A message that deletes on read is deleted *here*, before its body
+            // is handed over. Asking the client to delete it afterwards would be
+            // a request, not a rule: the preview path withholds the body for
+            // exactly this reason, so this is the only way to read it.
+            if let Some(entry) = crate::core::ephemeral::get(email.uid) {
+                resp.ephemeral = Some(if entry.deletes_on_read { "read".into() } else { "expire".into() });
+                resp.expires_at = entry.expires_at;
+
+                if entry.deletes_on_read {
+                    if crate::core::ephemeral::purge_message(&user_storage, &email_storage, &user.username, email.uid) {
+                        resp.deleted = true;
+                        log::info!("[Ephemeral] '{}' opened and deleted uid={}", user.username, email.uid);
+                        if let Err(e) = crate::core::ephemeral::record_read(&entry) {
+                            log::warn!("[Ephemeral] Deleted uid={} but could not record the receipt: {}", email.uid, e);
+                        }
+                    } else {
+                        // The copy is still on disk: report that, never the promise.
+                        log::warn!("[Ephemeral] Could not delete uid={} for '{}'", email.uid, user.username);
+                    }
+                }
+            }
+
             let body = serde_json::to_vec(&resp).unwrap();
             Response::from_data(body).with_status_code(200).with_header(json_header())
         }
-        Err(_) => {
+        Err(err) => {
+            // Self-heal: the index claims a message the storage no longer has.
+            let missing = format!("{}", err).to_lowercase().contains("not found");
+            if missing && user_storage.detach_email(&user.username, req.uid) {
+                log::warn!(
+                    "[Email] Detached UID {} from '{}' — index entry had no blob",
+                    req.uid, user.username
+                );
+            }
             let err = serde_json::to_vec(&ErrorResponse { error: "Email not found".into(), code: "email_not_found".into() }).unwrap();
             Response::from_data(err).with_status_code(404).with_header(json_header())
         }
@@ -89,18 +135,58 @@ pub fn get_emails_bulk(
         .collect();
 
     let emails = email_storage.get_emails_bulk(allowed_uids).unwrap_or_default();
+    // One read of the ephemeral store for the whole page, not one per message.
+    let ephemeral = crate::core::ephemeral::snapshot();
     let email_responses: Vec<EmailBytesResponse> = emails.iter().map(|e| {
-        EmailBytesResponse {
-            uid: e.uid,
-            data: STANDARD.encode(&e.raw_data),
-            message_key: e.message_key.as_ref().map(|k| STANDARD.encode(k)),
-            received_at: unix_to_iso(e.timestamp),
-            e2ee: e.e2ee,
+        let mut resp = plain_response(e);
+        if let Some(entry) = ephemeral.get(&e.uid) {
+            resp.ephemeral = Some(if entry.deletes_on_read { "read".into() } else { "expire".into() });
+            resp.expires_at = entry.expires_at;
+            if entry.deletes_on_read {
+                // The body is deliberately withheld here: a preview fetch must not
+                // be able to consume (or retain) a message that deletes on open.
+                resp.data = String::new();
+                resp.message_key = None;
+            }
         }
+        resp
     }).collect();
 
     let resp = EmailsBulkResponse { emails: email_responses };
     let body = serde_json::to_vec(&resp).unwrap();
+    Response::from_data(body).with_status_code(200).with_header(json_header())
+}
+
+/// POST /email/flags — read/starred state for every email this account owns.
+///
+/// Deliberately separate from the bulk fetch: this response carries no message
+/// data, so a client can restore its mailbox state without decrypting anything.
+pub fn email_flags(
+    _request: &mut Request,
+    user: Option<User>,
+    _user_storage: Arc<UserStorage>,
+    email_storage: Arc<EmailStorage>,
+) -> Response<Cursor<Vec<u8>>> {
+    let user = match user {
+        Some(u) => u,
+        None => {
+            let err = serde_json::to_vec(&ErrorResponse { error: "Unauthorized".into(), code: "unauthorized".into() }).unwrap();
+            return Response::from_data(err).with_status_code(401).with_header(json_header());
+        }
+    };
+
+    let mut all: Vec<u128> = user.emailIds.clone();
+    all.extend(user.sent_emails.iter().copied());
+    all.sort_unstable();
+    all.dedup();
+
+    let emails = email_storage.get_emails_bulk(all).unwrap_or_default();
+    let flags: Vec<EmailFlagResponse> = emails
+        .iter()
+        .map(|e| EmailFlagResponse { uid: e.uid, read: e.read, starred: e.starred })
+        .collect();
+
+    let body = serde_json::to_vec(&EmailFlagsResponse { flags }).unwrap();
     Response::from_data(body).with_status_code(200).with_header(json_header())
 }
 
@@ -118,7 +204,9 @@ pub fn list_email_uids(
         }
     };
 
-    let resp = EmailUidsResponse { uids: user.emailIds.clone() };
+    // Trashed messages stay indexed (so the Trash view can read them) but leave the folder.
+    let trashed = crate::core::trash::trashed_uids(&user.username);
+    let resp = EmailUidsResponse { uids: user.emailIds.iter().copied().filter(|id| !trashed.contains(id)).collect() };
     let body = serde_json::to_vec(&resp).unwrap();
     Response::from_data(body).with_status_code(200).with_header(json_header())
 }
@@ -148,9 +236,7 @@ pub fn delete_email(
     }
 
     
-    let mut updated_user = user.clone();
-    updated_user.emailIds.retain(|&id| id != req.uid);
-    user_storage.update_user(updated_user);
+    user_storage.mutate_user(&user.username, |u| u.emailIds.retain(|&id| id != req.uid));
     user_storage.remove_email_from_groups(&user.username, req.uid);
 
     
@@ -162,6 +248,60 @@ pub fn delete_email(
     if let Err(_) = email_storage.delete_email(req.uid) {
         let err = serde_json::to_vec(&ErrorResponse { error: "Failed to delete email".into(), code: "delete_failed".into() }).unwrap();
         return Response::from_data(err).with_status_code(500).with_header(json_header());
+    }
+    let _ = crate::core::trash::remove(&user.username, req.uid);
+    // Written only after the blob is gone: a log entry for a message that is
+    // still there would be worse than no entry at all.
+    if let Err(e) = crate::core::mailboxlog::append(&user.username, "deleted", &req.uid.to_string()) {
+        log::warn!("[Log] Could not record deletion of {}: {}", req.uid, e);
+    }
+
+    let msg = serde_json::to_vec(&MessageResponse { message: "Email deleted".into() }).unwrap();
+    Response::from_data(msg).with_status_code(200).with_header(json_header())
+}
+
+/// POST /email/sent/delete - delete one of the caller's own sent copies.
+///
+/// The inbox delete only ever looked in `emailIds`, so a message deleted from the Sent folder
+/// answered 404 and stayed. A sent copy is the sender's own blob (the recipient's copy is a
+/// different blob with its own uid), so deleting it touches nobody else's mail.
+pub fn delete_sent_email(
+    request: &mut Request,
+    user: Option<User>,
+    user_storage: Arc<UserStorage>,
+    email_storage: Arc<EmailStorage>,
+) -> Response<Cursor<Vec<u8>>> {
+    let user = match user {
+        Some(u) => u,
+        None => {
+            let err = serde_json::to_vec(&ErrorResponse { error: "Unauthorized".into(), code: "unauthorized".into() }).unwrap();
+            return Response::from_data(err).with_status_code(401).with_header(json_header());
+        }
+    };
+
+    let req: DeleteEmailRequest = match read_json_body(request) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+
+    if !user.sent_emails.contains(&req.uid) {
+        let err = serde_json::to_vec(&ErrorResponse { error: "Email not found".into(), code: "email_not_found".into() }).unwrap();
+        return Response::from_data(err).with_status_code(404).with_header(json_header());
+    }
+
+    user_storage.mutate_user(&user.username, |u| u.sent_emails.retain(|&id| id != req.uid));
+    if let Err(e) = user_storage.save_to_file() {
+        log::warn!("[API] Failed to persist user storage after sent delete: {}", e);
+    }
+
+    if let Err(_) = email_storage.delete_email(req.uid) {
+        let err = serde_json::to_vec(&ErrorResponse { error: "Failed to delete email".into(), code: "delete_failed".into() }).unwrap();
+        return Response::from_data(err).with_status_code(500).with_header(json_header());
+    }
+    let _ = crate::core::trash::remove(&user.username, req.uid);
+    // Same signed log as the inbox: written only after the blob is gone.
+    if let Err(e) = crate::core::mailboxlog::append(&user.username, "deleted", &req.uid.to_string()) {
+        log::warn!("[Log] Could not record deletion of sent copy {}: {}", req.uid, e);
     }
 
     let msg = serde_json::to_vec(&MessageResponse { message: "Email deleted".into() }).unwrap();
@@ -252,7 +392,9 @@ pub fn list_recent_email_uids(
     };
 
     
+    let trashed = crate::core::trash::trashed_uids(&user.username);
     let uids: Vec<u128> = user.emailIds.iter().rev()
+        .filter(|id| !trashed.contains(id))
         .skip(req.offset)
         .take(req.limit)
         .copied()
@@ -261,6 +403,74 @@ pub fn list_recent_email_uids(
     let resp = EmailUidsResponse { uids };
     let body = serde_json::to_vec(&resp).unwrap();
     Response::from_data(body).with_status_code(200).with_header(json_header())
+}
+
+/// One shape for every reason a message could not be queued, so both send
+/// endpoints answer the same way.
+fn schedule_error(e: crate::core::scheduled::QueueError) -> Response<Cursor<Vec<u8>>> {
+    use crate::core::scheduled::QueueError;
+    let (status, code, message) = match e {
+        QueueError::TooMany => (
+            409,
+            "too_many_scheduled",
+            format!(
+                "You already have {} messages waiting. Send or cancel one first.",
+                crate::core::scheduled::MAX_PENDING_PER_OWNER
+            ),
+        ),
+        QueueError::TooSoon => (400, "send_at_too_soon", "Pick a time at least a minute from now".to_string()),
+        QueueError::TooFar => (400, "send_at_too_far", "That is more than a year away".to_string()),
+    };
+    let err = serde_json::to_vec(&ErrorResponse { error: message, code: code.into() }).unwrap();
+    Response::from_data(err).with_status_code(status).with_header(json_header())
+}
+
+/// Who this message goes out as.
+///
+/// The account address is the default. A caller may also send as one of their own
+/// switched-on aliases — which is what makes an alias a two-way address rather
+/// than a mailbox you can only read. Anything else (someone else's alias, a
+/// switched-off one, an address on another domain) is refused rather than
+/// quietly replaced: a message that goes out under the wrong name is worse than
+/// one that does not go out.
+fn sender_address_for(
+    user: &User,
+    wanted: Option<&str>,
+) -> Result<String, Response<Cursor<Vec<u8>>>> {
+    let domain = emailutils::get_server_domain();
+    let real = format!("{}@{}", user.username, domain);
+
+    let requested = wanted.map(|w| w.trim().to_ascii_lowercase()).filter(|w| !w.is_empty());
+    let local = match requested {
+        None => return Ok(real),
+        Some(value) => value.split('@').next().unwrap_or("").to_string(),
+    };
+    if local.is_empty() || local == user.username.to_ascii_lowercase() {
+        return Ok(real);
+    }
+
+    let store = crate::core::aliases::load();
+    match store.aliases.get(&local) {
+        Some(alias) if alias.username.eq_ignore_ascii_case(&user.username) && alias.disabled_at.is_none() => {
+            Ok(format!("{}@{}", local, domain))
+        }
+        Some(alias) if alias.username.eq_ignore_ascii_case(&user.username) => {
+            let err = serde_json::to_vec(&ErrorResponse {
+                error: format!("'{}' is switched off — turn it back on to send from it", local),
+                code: "alias_disabled".into(),
+            })
+            .unwrap();
+            Err(Response::from_data(err).with_status_code(409).with_header(json_header()))
+        }
+        _ => {
+            let err = serde_json::to_vec(&ErrorResponse {
+                error: format!("'{}' is not one of your addresses", local),
+                code: "unknown_alias".into(),
+            })
+            .unwrap();
+            Err(Response::from_data(err).with_status_code(400).with_header(json_header()))
+        }
+    }
 }
 
 pub fn send_email(
@@ -282,6 +492,27 @@ pub fn send_email(
         Err(resp) => return resp,
     };
 
+    // Outbound limits: the domain's reputation is shared by every account, so
+    // one spammer costs everyone. Counted before the send is attempted, so a
+    // failing relay cannot be used to probe for free.
+    let recipient_count = req.to.iter().filter(|r| !r.trim().is_empty()).count();
+    match crate::core::sendlimit::check_and_count(&user.username, recipient_count, user.userCreated) {
+        Ok(_) => {}
+        Err(code) => {
+            let message = match code {
+                "too_many_recipients" => "That is more recipients than one message may have; split it up",
+                "daily_limit_reached" => "You have reached today's sending limit on this account",
+                _ => "This message cannot be sent",
+            };
+            let err = serde_json::to_vec(&ErrorResponse {
+                error: message.into(),
+                code: code.into(),
+            })
+            .unwrap();
+            return Response::from_data(err).with_status_code(429).with_header(json_header());
+        }
+    }
+
     let data = match STANDARD.decode(&req.data) {
         Ok(d) => d,
         Err(_) => {
@@ -301,13 +532,52 @@ pub fn send_email(
     // The envelope sender is the authenticated account, never a client-supplied
     // value: honouring 'req.from' would let any user send mail as anyone,
     // including as another local user or as a third-party domain.
-    let domain = emailutils::get_server_domain();
-    let sender_address = format!("{}@{}", user.username, domain);
+    // Outbound quota: there is no relay to throttle, so the limit lives here.
+    if let Err(retry_after) = crate::utils::quota::check_and_record(&user.username) {
+        let err = serde_json::to_vec(&ErrorResponse {
+            error: format!(
+                "Sending limit reached. Try again in about {} seconds.",
+                retry_after
+            ),
+            code: "rate_limited".into(),
+        })
+        .unwrap();
+        return Response::from_data(err)
+            .with_status_code(429)
+            .with_header(json_header());
+    }
+
+    let sender_address = match sender_address_for(&user, req.from_alias.as_deref()) {
+        Ok(address) => address,
+        Err(resp) => return resp,
+    };
     if !req.from.trim().is_empty() && !req.from.eq_ignore_ascii_case(&sender_address) {
         log::warn!(
             "[API] User '{}' tried to send with envelope sender '{}' - overriding with '{}'",
             user.username, req.from, sender_address
         );
+    }
+
+    // A message for later is stored now and released by the sweeper through the
+    // same delivery path. The sending limits were counted above, when the
+    // message was accepted: queueing cannot be used to exceed them.
+    if let Some(at) = req.send_at.filter(|at| *at > 0) {
+        match crate::core::scheduled::queue(
+            &user.username,
+            req.to.clone(),
+            crate::core::scheduled::Kind::Raw,
+            req.data.clone(),
+            req.subject.clone(),
+            at,
+        ) {
+            Ok(item) => {
+                let body = serde_json::to_vec(&serde_json::json!({
+                    "scheduled": true, "id": item.id, "send_at": item.send_at, "to": item.to,
+                })).unwrap();
+                return Response::from_data(body).with_status_code(200).with_header(json_header());
+            }
+            Err(e) => return schedule_error(e),
+        }
     }
 
     // Delivery targets are resolved from each recipient's own domain. Taking a
@@ -320,50 +590,9 @@ pub fn send_email(
         );
     }
 
-    let mut delivered = 0usize;
-    let mut failures: Vec<String> = Vec::new();
-
-    let mut by_domain: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
-    for address in &req.to {
-        match address.find('@') {
-            Some(pos) => by_domain
-                .entry(address[pos + 1..].to_lowercase())
-                .or_default()
-                .push(address.clone()),
-            None => failures.push(format!("{}: invalid email address", address)),
-        }
-    }
-
-    for (rcpt_domain, addresses) in &by_domain {
-        let mx_host = match emailutils::resolve_mx(rcpt_domain) {
-            Some(host) => host,
-            None => {
-                for address in addresses {
-                    failures.push(format!("{}: MX lookup failed for '{}'", address, rcpt_domain));
-                }
-                continue;
-            }
-        };
-
-        let mut fsm = match EmailSendingFSM::connect(&mx_host, 25, domain) {
-            Ok(f) => f,
-            Err(e) => {
-                for address in addresses {
-                    failures.push(format!("{}: SMTP connect to '{}' failed: {}", address, mx_host, e));
-                }
-                continue;
-            }
-        };
-
-        match fsm.send(&sender_address, addresses, &data) {
-            Ok(()) => delivered += addresses.len(),
-            Err(e) => {
-                for address in addresses {
-                    failures.push(format!("{}: SMTP error: {}", address, e));
-                }
-            }
-        }
-    }
+    // One delivery path for both an immediate send and a released scheduled
+    // message, so signing and MX resolution cannot drift apart.
+    let (delivered, failures) = emailutils::deliver_raw(&sender_address, &req.to, &data);
 
     if delivered == 0 {
         let err = serde_json::to_vec(&ErrorResponse {
@@ -563,7 +792,7 @@ pub fn get_public_keys(
     for (ext_domain, addresses) in &external_by_domain {
         let mut queried = false;
         if let Some(mx_host) = emailutils::resolve_mx(ext_domain) {
-            if let Ok(mut fsm) = EmailSendingFSM::connect(&mx_host, 25, ehlo_domain) {
+            if let Ok(mut fsm) = EmailSendingFSM::connect(&mx_host, 25, emailutils::get_helo_domain()) {
                 if let Ok(key_results) = fsm.query_opntrn_keys(addresses) {
                     for (addr, key_info) in key_results {
                         match key_info {
@@ -631,6 +860,96 @@ pub fn send_encrypted(
         Err(resp) => return resp,
     };
 
+    // An edit must name a time. Without one this would fall through to the normal
+    // send path and deliver a *second* copy while the held one stayed queued — the
+    // worst possible outcome, because the sender thinks they corrected it once.
+    let editing = req.replace_id.as_deref().map(str::trim).filter(|id| !id.is_empty());
+    if editing.is_some() && req.send_at.filter(|at| *at > 0).is_none() {
+        let err = serde_json::to_vec(&ErrorResponse {
+            error: "An edited message still needs a time — it is still held".into(),
+            code: "replace_needs_time".into(),
+        })
+        .unwrap();
+        return Response::from_data(err).with_status_code(400).with_header(json_header());
+    }
+
+    // Held for later: store the request as it arrived and let the sweeper replay
+    // it through this same endpoint, so a scheduled message is encrypted, saved
+    // and delivered by exactly the code that sends one now.
+    if let Some(at) = req.send_at.filter(|at| *at > 0) {
+        // Strip the scheduling fields from what is stored: the held copy must be
+        // a "send now" request, or releasing it would queue it again.
+        let held = serde_json::to_value(&req).ok().map(|mut value| {
+            if let Some(obj) = value.as_object_mut() {
+                obj.remove("send_at");
+                obj.remove("subject");
+                // A released copy must not try to edit anything: the id it names
+                // is what it was, not what it is about to become.
+                obj.remove("replace_id");
+            }
+            value
+        });
+        let payload = match held.and_then(|value| serde_json::to_string(&value).ok()) {
+            Some(p) => p,
+            None => {
+                log::error!("[API] Could not serialise a scheduled send");
+                let err = serde_json::to_vec(&ErrorResponse {
+                    error: "Could not hold that message for later".into(),
+                    code: "schedule_failed".into(),
+                }).unwrap();
+                return Response::from_data(err).with_status_code(500).with_header(json_header());
+            }
+        };
+        let to: Vec<String> = req.recipients.keys().cloned().collect();
+        let replacing = editing;
+
+        let queued = match replacing {
+            Some(id) => crate::core::scheduled::reschedule(
+                &user.username,
+                id,
+                to,
+                payload,
+                req.subject.clone(),
+                at,
+            )
+            .map(|maybe| maybe.map(|item| (item, true))),
+            None => crate::core::scheduled::queue(
+                &user.username,
+                to,
+                crate::core::scheduled::Kind::Encrypted,
+                payload,
+                req.subject.clone(),
+                at,
+            )
+            .map(|item| Some((item, false))),
+        };
+
+        match queued {
+            Ok(Some((item, replaced))) => {
+                let body = serde_json::to_vec(&serde_json::json!({
+                    "scheduled": true,
+                    "replaced": replaced,
+                    "id": item.id,
+                    "send_at": item.send_at,
+                    "to": item.to,
+                }))
+                .unwrap();
+                return Response::from_data(body).with_status_code(200).with_header(json_header());
+            }
+            // Nothing of theirs is pending under that id: one answer for "already
+            // sent", "already cancelled" and "not yours", so ids cannot be probed.
+            Ok(None) => {
+                let err = serde_json::to_vec(&ErrorResponse {
+                    error: "That message has already gone, or cannot be edited".into(),
+                    code: "not_editable".into(),
+                })
+                .unwrap();
+                return Response::from_data(err).with_status_code(409).with_header(json_header());
+            }
+            Err(e) => return schedule_error(e),
+        }
+    }
+
     if req.recipients.is_empty() || req.recipients.len() > MAX_RECIPIENTS {
         let err = serde_json::to_vec(&ErrorResponse {
             error: format!("Provide between 1 and {} recipients", MAX_RECIPIENTS),
@@ -640,7 +959,29 @@ pub fn send_encrypted(
     }
 
     let domain = emailutils::get_server_domain();
-    let sender_address = format!("{}@{}", user.username, domain);
+    // Outbound quota: there is no relay to throttle, so the limit lives here.
+    if let Err(retry_after) = crate::utils::quota::check_and_record(&user.username) {
+        let err = serde_json::to_vec(&ErrorResponse {
+            error: format!(
+                "Sending limit reached. Try again in about {} seconds.",
+                retry_after
+            ),
+            code: "rate_limited".into(),
+        })
+        .unwrap();
+        return Response::from_data(err)
+            .with_status_code(429)
+            .with_header(json_header());
+    }
+
+    let sender_address = match sender_address_for(&user, req.from_alias.as_deref()) {
+        Ok(address) => address,
+        Err(resp) => return resp,
+    };
+
+    // Disappearing mail, if the sender asked for it. Enforceable only for local
+    // mailboxes: another provider's copy is theirs, not ours to delete.
+    let ephemeral_policy = req.ephemeral.filter(|policy| !policy.is_noop());
 
     // --- 1. Save the local copy to sender's sent_emails ---
     let local_data = match STANDARD.decode(&req.localcopy.raw_data) {
@@ -702,9 +1043,12 @@ pub fn send_encrypted(
     }
 
     // Add to user's sent_emails
-    let mut updated_user = user.clone();
-    updated_user.sent_emails.push(sent_uid);
-    user_storage.update_user(updated_user);
+    // In place under the storage lock: replacing the record drops concurrent writes.
+    user_storage.mutate_user(&user.username, |u| {
+        if !u.sent_emails.contains(&sent_uid) {
+            u.sent_emails.push(sent_uid);
+        }
+    });
     if let Err(e) = user_storage.save_to_file() {
         log::warn!("[API] Failed to persist user storage after sent email: {}", e);
     }
@@ -716,6 +1060,127 @@ pub fn send_encrypted(
     // Group recipients by domain for efficient delivery
     let mut by_domain: std::collections::HashMap<String, Vec<(String, Vec<u8>, bool)>> = std::collections::HashMap::new();
     for (address, payload) in &req.recipients {
+        // A recipient whose mailbox lives on this server must not leave it.
+        // Sending their copy out over SMTP and re-parsing it on the way back is
+        // what used to strip the AES key from internal mail, leaving ciphertext
+        // that its owner could never open.
+        let local_username = address
+            .rsplit_once('@')
+            .filter(|(_, d)| d.eq_ignore_ascii_case(&emailutils::get_server_domain()))
+            .map(|(l, _)| l.to_string());
+
+        if let Some(username) = local_username {
+            if let Some(recipient_user) = user_storage.get_user(&username) {
+                let body = match STANDARD.decode(&payload.data_encrypted) {
+                    Ok(d) => d,
+                    Err(_) => {
+                        delivery_results.push(DeliveryResult {
+                            address: address.clone(),
+                            success: false,
+                            error: Some("Invalid base64 in data_encrypted".into()),
+                        });
+                        continue;
+                    }
+                };
+                let enc_key = STANDARD.decode(&payload.aes_encrypted).ok().filter(|k| !k.is_empty());
+                let email = Email {
+                    uid: emailutils::generate_email_uid(&recipient_user),
+                    secure: payload.e2ee,
+                    read: false,
+                    starred: false,
+                    e2ee: payload.e2ee,
+                    userid: recipient_user.uid,
+                    from: sender_address.clone(),
+                    to: vec![address.clone()],
+                    timestamp: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0),
+                    publicKeyHash: recipient_user
+                        .publicKey
+                        .as_ref()
+                        .map(crate::utils::cryptography::hash_public_key)
+                        .unwrap_or(crate::utils::cryptography::Sha256Hash([0u8; 32])),
+                    raw_data: body,
+                    message_key: enc_key,
+                };
+                match email_storage.save_email(&email) {
+                    Ok(_) => {
+                        user_storage.mutate_user(&username, |u| {
+                            if !u.emailIds.contains(&email.uid) {
+                                u.emailIds.push(email.uid);
+                            }
+                        });
+                        user_storage.add_email_to_matching_groups(&username, email.uid, &email.from);
+                        let _ = user_storage.save_to_file();
+
+                        // Record the rule before claiming the delivery: if it cannot
+                        // be written, take the copy back out. A message delivered
+                        // under a promise the server cannot keep is worse than one
+                        // that never arrived.
+                        if let Some(policy) = ephemeral_policy {
+                            let now = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_secs())
+                                .unwrap_or(0);
+                            let entry = crate::core::ephemeral::Entry {
+                                uid: email.uid,
+                                owner: username.clone(),
+                                owner_uid: recipient_user.uid,
+                                sender: format!("{}@{}", user.username, emailutils::get_server_domain()),
+                                sender_uid: sent_uid,
+                                deletes_on_read: policy.deletes_on_read,
+                                expires_at: policy.expires_at(now),
+                                created_at: now,
+                            };
+                            if let Err(e) = crate::core::ephemeral::register(entry) {
+                                log::error!(
+                                    "[API] Rolling back local delivery to '{}': could not record the disappearing rule: {}",
+                                    address, e
+                                );
+                                let _ = email_storage.delete_email(email.uid);
+                                user_storage.detach_email(&username, email.uid);
+                                let _ = user_storage.save_to_file();
+                                delivery_results.push(DeliveryResult {
+                                    address: address.clone(),
+                                    success: false,
+                                    error: Some("Could not apply the disappearing rule; nothing was delivered".into()),
+                                });
+                                continue;
+                            }
+                        }
+
+                        // A message from another mailbox on this server is still
+                        // a message: the recipient should hear about it the same way.
+                        crate::core::push::notify_async(
+                            &username,
+                            "New mail",
+                            &format!("From {}@{}", user.username, emailutils::get_server_domain()),
+                        );
+
+                        delivery_results.push(DeliveryResult {
+                            address: address.clone(),
+                            success: true,
+                            error: None,
+                        });
+                        log::info!(
+                            "[API] Local delivery to '{}' stored directly (e2ee={})",
+                            address, payload.e2ee
+                        );
+                    }
+                    Err(e) => {
+                        log::error!("[API] Local delivery to '{}' failed: {}", address, e);
+                        delivery_results.push(DeliveryResult {
+                            address: address.clone(),
+                            success: false,
+                            error: Some("Could not be stored".into()),
+                        });
+                    }
+                }
+                continue;
+            }
+        }
+
         // For E2EE payloads: decode aes_encrypted + data_encrypted, then pack into the SMTP wire blob.
         // For plaintext payloads: data_encrypted is the raw RFC 5322 email bytes.
         let wire_bytes = if payload.e2ee {
@@ -812,7 +1277,7 @@ pub fn send_encrypted(
 
         // Send each email separately (different data per recipient)
         for (address, data, is_e2ee) in recipients {
-            let mut fsm = match EmailSendingFSM::connect(&mx_host, 25, domain) {
+            let mut fsm = match EmailSendingFSM::connect(&mx_host, 25, emailutils::get_helo_domain()) {
                 Ok(f) => f,
                 Err(e) => {
                     delivery_results.push(DeliveryResult {
@@ -873,7 +1338,8 @@ pub fn list_sent_email_uids(
         }
     };
 
-    let resp = EmailUidsResponse { uids: user.sent_emails.clone() };
+    let trashed = crate::core::trash::trashed_uids(&user.username);
+    let resp = EmailUidsResponse { uids: user.sent_emails.iter().copied().filter(|id| !trashed.contains(id)).collect() };
     let body = serde_json::to_vec(&resp).unwrap();
     Response::from_data(body).with_status_code(200).with_header(json_header())
 }
@@ -898,7 +1364,9 @@ pub fn list_recent_sent_email_uids(
         Err(resp) => return resp,
     };
 
+    let trashed = crate::core::trash::trashed_uids(&user.username);
     let uids: Vec<u128> = user.sent_emails.iter().rev()
+        .filter(|id| !trashed.contains(id))
         .skip(req.offset)
         .take(req.limit)
         .copied()
@@ -936,13 +1404,7 @@ pub fn get_sent_email(
 
     match email_storage.read_email(req.uid) {
         Ok(email) => {
-            let resp = EmailBytesResponse {
-                uid: email.uid,
-                data: STANDARD.encode(&email.raw_data),
-                message_key: email.message_key.as_ref().map(|k| STANDARD.encode(k)),
-                received_at: unix_to_iso(email.timestamp),
-                e2ee: email.e2ee,
-            };
+            let resp = plain_response(&email);
             let body = serde_json::to_vec(&resp).unwrap();
             Response::from_data(body).with_status_code(200).with_header(json_header())
         }
@@ -978,17 +1440,81 @@ pub fn get_sent_emails_bulk(
         .collect();
 
     let emails = email_storage.get_emails_bulk(allowed_uids).unwrap_or_default();
-    let email_responses: Vec<EmailBytesResponse> = emails.iter().map(|e| {
-        EmailBytesResponse {
-            uid: e.uid,
-            data: STANDARD.encode(&e.raw_data),
-            message_key: e.message_key.as_ref().map(|k| STANDARD.encode(k)),
-            received_at: unix_to_iso(e.timestamp),
-            e2ee: e.e2ee,
-        }
-    }).collect();
+    let email_responses: Vec<EmailBytesResponse> = emails.iter().map(plain_response).collect();
 
     let resp = EmailsBulkResponse { emails: email_responses };
     let body = serde_json::to_vec(&resp).unwrap();
+    Response::from_data(body).with_status_code(200).with_header(json_header())
+}
+
+/// POST /api/email/ephemeral — how a disappearing message stands, from either
+/// side. The recipient's own copy reports "armed" (and its timer); the sender's
+/// sent copy reports "read" once the recipient opened it, because the recipient's
+/// copy no longer exists to ask about.
+pub fn ephemeral_status(
+    request: &mut Request,
+    user: Option<User>,
+    _user_storage: Arc<UserStorage>,
+    _email_storage: Arc<EmailStorage>,
+) -> Response<Cursor<Vec<u8>>> {
+    let user = match user {
+        Some(u) => u,
+        None => {
+            let err = serde_json::to_vec(&ErrorResponse { error: "Unauthorized".into(), code: "unauthorized".into() }).unwrap();
+            return Response::from_data(err).with_status_code(401).with_header(json_header());
+        }
+    };
+
+    let req: EphemeralStatusRequest = match read_json_body(request) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+
+    // One read of the store for the whole request.
+    let entries = crate::core::ephemeral::snapshot();
+    let mut items: Vec<EphemeralStatusItem> = Vec::new();
+
+    for raw_uid in req.uids {
+        let uid = match raw_uid.value() {
+            Some(uid) => uid,
+            None => continue, // an id we cannot read is an id we cannot answer for
+        };
+        // The recipient's copy: only answered for mail they actually own.
+        if user.emailIds.contains(&uid) {
+            if let Some(entry) = entries.get(&uid) {
+                items.push(EphemeralStatusItem {
+                    uid,
+                    state: "armed".into(),
+                    read_at: None,
+                    expires_at: entry.expires_at,
+                    recipient: None,
+                });
+            }
+            continue;
+        }
+
+        // The sender's copy: a receipt means the other side is gone.
+        if user.sent_emails.contains(&uid) {
+            if let Some(receipt) = crate::core::ephemeral::receipt_for(uid) {
+                items.push(EphemeralStatusItem {
+                    uid,
+                    state: "read".into(),
+                    read_at: Some(receipt.read_at),
+                    expires_at: None,
+                    recipient: Some(receipt.recipient),
+                });
+            } else if let Some(entry) = entries.values().find(|e| e.sender_uid == uid) {
+                items.push(EphemeralStatusItem {
+                    uid,
+                    state: "armed".into(),
+                    read_at: None,
+                    expires_at: entry.expires_at,
+                    recipient: Some(entry.owner.clone()),
+                });
+            }
+        }
+    }
+
+    let body = serde_json::to_vec(&EphemeralStatusResponse { items }).unwrap();
     Response::from_data(body).with_status_code(200).with_header(json_header())
 }

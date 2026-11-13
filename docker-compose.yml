@@ -8,15 +8,23 @@ services:
     image: openneutron:local
     container_name: openneutron
     ports:
-      - "2525:2525"
-      - "8080:8080"
+      - "127.0.0.1:2525:2525"
+      - "127.0.0.1:8080:8080"
     volumes:
       # Mount code and artifacts so build output is persisted across runs.
       - .:/usr/src/app:delegated
       - ./data:/usr/src/app/data
       - ./config.yml:/usr/src/app/config.yml
+      - /etc/letsencrypt:/etc/letsencrypt:ro
     environment:
       RUST_LOG: info
     tty: true
     stdin_open: true
+    # Run with no capabilities at all. The app binds 2525 and 8080 (both above 1024),
+    # owns its files as root, and needs no kernel privileges -- so a compromise inside
+    # the container has nothing to escalate with.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped

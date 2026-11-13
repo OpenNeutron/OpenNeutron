@@ -31,3 +31,6 @@ data/blobs/*
 data/users.bin
 *.txt
 *.py
+
+# The proofs are part of the codebase: they are what says the features still work.
+!proofs/*.py

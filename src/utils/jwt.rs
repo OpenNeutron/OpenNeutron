@@ -52,12 +52,33 @@ pub fn init() {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
-    pub sub: String,  
-    pub iat: usize,   
-    pub exp: usize,   
+    pub sub: String,
+    pub iat: usize,
+    pub exp: usize,
+    /// Present only on short-lived login challenges. A full session token has
+    /// no scope, so a challenge can never be used as a session token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    /// Session id, so the token can be listed and revoked. Absent on tokens
+    /// minted before the registry existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sid: Option<String>,
+}
+
+/// Secret bytes reused as the master key for password peppering.
+///
+/// Reusing the JWT secret means the pepper cannot drift out of sync with the
+/// configuration: there is exactly one secret to protect and rotate.
+pub fn pepper_material() -> Vec<u8> {
+    jwt_secret().to_vec()
 }
 
 pub fn generate_jwt(username: &str) -> Result<String, JwtError> {
+    generate_jwt_with_sid(username, None)
+}
+
+/// Session token carrying the id that the registry can revoke.
+pub fn generate_jwt_with_sid(username: &str, sid: Option<&str>) -> Result<String, JwtError> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -66,6 +87,8 @@ pub fn generate_jwt(username: &str) -> Result<String, JwtError> {
         sub: username.to_string(),
         iat: now,
         exp: now + JWT_EXPIRY_SECONDS,
+        scope: None,
+        sid: sid.map(|s| s.to_string()),
     };
     encode(&Header::default(), &claims, &EncodingKey::from_secret(jwt_secret()))
 }
@@ -80,3 +103,24 @@ pub fn validate_jwt(token: &str) -> Result<Claims, JwtError> {
     decode::<Claims>(token, &DecodingKey::from_secret(jwt_secret()), &validation)
         .map(|data| data.claims)
 }
+
+/// Token proving the password step passed, valid only long enough to enter a
+/// code. Scoped so it cannot stand in for a session token.
+pub fn generate_challenge_jwt(username: &str) -> Result<String, JwtError> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as usize;
+    let claims = Claims {
+        sub: username.to_string(),
+        iat: now,
+        exp: now + CHALLENGE_EXPIRY_SECONDS,
+        scope: Some("mfa".to_string()),
+        sid: None,
+    };
+    encode(&Header::default(), &claims, &EncodingKey::from_secret(jwt_secret()))
+}
+
+/// 5 minutes: long enough to open an authenticator app, short enough that a
+/// leaked challenge is worthless.
+const CHALLENGE_EXPIRY_SECONDS: usize = 300;

@@ -512,8 +512,14 @@ impl DkimSigner {
         let signature: Signature = signing_key.sign(signed_data.as_bytes());
         let sig_b64 = BASE64.encode(signature.to_bytes());
 
-        // Build the full DKIM-Signature header
-        let dkim_header = format!("DKIM-Signature:{} b={}\r\n", sig_value_no_b.trim_end(), sig_b64);
+        // Build the full DKIM-Signature header.
+        //
+        // 'sig_value_no_b' already ends with ';b=' - appending ' b={sig}' to it
+        // verbatim produced 'b= b=XXXX', and the verifier's base64 decode then
+        // started at the '=' (Invalid symbol 61, offset 1). Drop the dangling
+        // 'b=' before appending the signature.
+        let sig_tags = sig_value_no_b.trim_end().trim_end_matches("b=");
+        let dkim_header = format!("DKIM-Signature:{} b={}\r\n", sig_tags.trim_end(), sig_b64);
 
         // Prepend to raw email
         let mut result = dkim_header.into_bytes();

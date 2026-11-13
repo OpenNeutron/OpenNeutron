@@ -29,6 +29,11 @@ pub struct Config {
 #[derive(Debug, Deserialize, Clone)]
 pub struct ServerSettings {
     pub domain: String,
+    /// Name announced in the SMTP banner and EHLO, and used as the outbound HELO.
+    /// It should resolve to this server and match the reverse DNS record. Defaults
+    /// to 'mail.<domain>', which is the conventional hostname for a mail host.
+    #[serde(default)]
+    pub hostname: Option<String>,
     pub smtp_port: u16,
     pub api_port: u16,
     /// When false (the default) '/api/user/register' is disabled and accounts can
@@ -36,6 +41,14 @@ pub struct ServerSettings {
     /// mail server lets anyone obtain a mailbox on your domain.
     #[serde(default)]
     pub allow_open_registration: bool,
+    /// Off by default: addresses are shared by carriers, offices and VPNs, so
+    /// gating signups on them refuses ordinary people more often than farms.
+    #[serde(default)]
+    pub one_account_per_ip: bool,
+    /// Accept a self-registration only when it presents an operator-approved
+    /// invite code (see the waitlist endpoints).
+    #[serde(default)]
+    pub registration_requires_approval: bool,
     /// Origins permitted to call the API from a browser. Empty (the default) sends
     /// no CORS headers at all, which is correct when the bundled SPA is served from
     /// this same server. Use explicit origins - never "*" - if a separate frontend
@@ -45,6 +58,10 @@ pub struct ServerSettings {
     /// Hard cap on an API request body, in bytes. Bodies are buffered in memory.
     #[serde(default = "default_max_body_bytes")]
     pub max_request_body_bytes: usize,
+    /// The address people reach this server at, used to build links that go out
+    /// by mail (sealed notes). Defaults to the request's Host header.
+    #[serde(default)]
+    pub public_url: Option<String>,
 }
 
 fn default_max_body_bytes() -> usize {
@@ -101,9 +118,13 @@ impl Default for Config {
         Config {
             server: ServerSettings {
                 domain: "localhost".to_string(),
+                public_url: None,
+                hostname: None,
                 smtp_port: 2525,
                 api_port: 8080,
                 allow_open_registration: false,
+                one_account_per_ip: false,
+                registration_requires_approval: false,
                 cors_allowed_origins: Vec::new(),
                 max_request_body_bytes: default_max_body_bytes(),
             },
